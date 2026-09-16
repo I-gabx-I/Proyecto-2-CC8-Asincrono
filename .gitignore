@@ -1,0 +1,13 @@
+   data/
+   *.tif
+   *.tiff
+   *.psb
+   *.class
+   target/
+   out/
+   build/
+   .idea/
+   .vscode/
+   *.iml
+   .DS_Store
+   *.log
