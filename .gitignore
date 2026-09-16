@@ -1,13 +1,11 @@
-   data/
-   *.tif
-   *.tiff
-   *.psb
-   *.class
-   target/
-   out/
-   build/
-   .idea/
-   .vscode/
-   *.iml
-   .DS_Store
-   *.log
+# Datos: imágenes y tiles (enormes, se generan localmente)
+data/
+
+# Compilación (se regenera con javac)
+out/
+*.class
+
+# Configuración personal de cada IDE
+.idea/
+.vscode/
+*.iml
