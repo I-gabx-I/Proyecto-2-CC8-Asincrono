@@ -1,11 +1,13 @@
-# Datos: imágenes y tiles (enormes, se generan localmente)
+# Imagenes y piramides: gigas, nunca al repositorio
 data/
+/*.png
+/*.tif
+/*.psb
 
-# Compilación (se regenera con javac)
+# Compilados
 out/
-*.class
+tools/out/
 
-# Configuración personal de cada IDE
-.idea/
-.vscode/
-*.iml
+# Editor (excepto la configuracion de fuentes de Java)
+.vscode/*
+!.vscode/settings.json
