@@ -50,12 +50,19 @@ public final class ImageIOSource implements ImageSource {
     @Override public int ancho() { return ancho; }
     @Override public int alto()  { return alto; }
 
-    public String descripcion() throws IOException {
-        return lector.getFormatName() + " (" + lector.getClass().getSimpleName() + ")";
+        @Override
+    public String descripcion() {
+        String formato;
+        try {
+            formato = lector.getFormatName();
+        } catch (IOException e) {
+            formato = "?";
+        }
+        return formato + " (" + lector.getClass().getSimpleName() + ", conversion: " + metodoConversion + ")";
     }
 
-    public double segundosLectura()    { return nanosLectura / 1e9; }
-    public double segundosConversion() { return nanosConversion / 1e9; }
+    @Override public double segundosLectura()    { return nanosLectura / 1e9; }
+    @Override public double segundosConversion() { return nanosConversion / 1e9; }
     public String metodoConversion()   { return metodoConversion; }
 
     @Override

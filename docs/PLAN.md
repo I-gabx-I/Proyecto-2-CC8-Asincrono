@@ -1,215 +1,188 @@
-# Plan de Fases — Proyecto 2: Servidor Asíncrono de Imágenes
+# Plan de trabajo — Proyecto 2: Servidor Asíncrono de Imágenes
 
-**Curso:** Ciencias de la Computación VIII
-**Autores:** Marcos Masaya, Samuel Caal
-**Stack:** Java 21 (servidor, sin dependencias externas salvo que se justifique) · HTML/JS/CSS (cliente)
-**Condiciones de evaluación:** sin internet · imagen de prueba de ~100 GB
+**Curso:** Ciencias de la Computación VIII · **Autores:** Marcos Masaya, Samuel Caal
+**Documento vivo.** Aquí se registra **qué** se hace y en qué estado está. El **porqué** de cada decisión va en [`DECISIONES.md`](DECISIONES.md); los formatos y algoritmos, en [`PROTOCOLO.md`](PROTOCOLO.md).
 
-> Documento vivo. Cada fase se marca al cumplir su **criterio de terminado**.
-> Las decisiones importantes se registran en `docs/DECISIONES.md`.
+**Cómo se usa:**
+1. Cada fase se trabaja en su propia rama (`feat/...`, `docs/...`), que sale de `main`.
+2. Se marcan las casillas al terminar cada tarea, **en la misma rama**.
+3. La fase se integra a `main` solo cuando se cumple su **criterio de terminado**, con la evidencia anotada.
+4. Si en la fase se toma una decisión de diseño, se agrega a `DECISIONES.md`.
+
+Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
+
+---
+
+## Contexto de evaluación (resumen)
+
+- **40 % funcionamiento y usabilidad, 60 % protocolo.** La pirámide de tiles es la base y no da puntos.
+- El techo de la nota lo pone la imagen más grande que funcione: 17 GB (20 pts), 28 GB (40), 55 GB (80), 93 GB (115).
+- Imágenes de evaluación: PNG RGB 8 bits, sin compresión (bloques *stored*), cuadradas, con números de dígitos 3×5 px que deben **leerse**.
+- Mecanismos aprobados por el ingeniero: FEC XOR, controlador PI, filtros de Bloom, EDF (ver `PROTOCOLO.md` §0).
 
 ---
 
 ## Estado general
 
-| Fase | Nombre | Responsable | Estado |
+| # | Fase | Rama | Estado |
 |---|---|---|---|
-| 0 | Setup y validación de riesgos | Ambos | ⬜ |
-| 1 | Especificación del protocolo v0 | Ambos | ⬜ |
-| 2 | Servidor HTTP propio | Por definir | ⬜ |
-| 3 | WebSocket (RFC 6455) | Por definir | ⬜ |
-| 4 | Ingesta y pirámide de tiles | Por definir | ⬜ |
-| 5 | Protocol Image en el servidor | Por definir | ⬜ |
-| 6 | Cliente web | Por definir | ⬜ |
-| 7 | Robustez y pruebas | Ambos | ⬜ |
-| 8 | Documento del protocolo | Ambos | ⬜ |
-| 9 | Preparación de entrega y defensa | Ambos | ⬜ |
+| — | Base v1: HTTP/WebSocket propios, PIMG v1, cliente, ingesta en cascada | `main` | ✅ |
+| — | Especificación `pimg.v2` y registro de decisiones | `docs/protocolo-v2` | ✅ |
+| 1 | Lector PNG en streaming | `feat/png-source` | ⬜ |
+| 2 | Almacenamiento empaquetado + ingesta reanudable | `feat/almacen-empaquetado` | ⬜ |
+| 3 | Legibilidad: tiles PNG + zoom > 1:1 | `feat/legibilidad` | ⬜ |
+| 4 | Cabecera v2 (`NUM`) + planificación EDF | `feat/edf` | ⬜ |
+| 5 | Red simulada + controles en el panel | `feat/red-simulada` | ⬜ |
+| 6 | FEC con paridad XOR entrelazada | `feat/fec` | ⬜ |
+| 7 | Controlador PI (`REPORT`, `CTRL`, gráficas) | `feat/control-pi` | ⬜ |
+| 8 | Filtros de Bloom, `RESUME` y re-declaración de vista | `feat/bloom-resume` | ⬜ |
+| 9 | ARC, ingesta automática y navegación ("ir a x, y") | `feat/extras` | ⬜ |
+| 10 | Pruebas finales con las 4 imágenes de evaluación | `test/evaluacion` | ⬜ |
+| 11 | Documento final y preparación de la defensa | `docs/final` | ⬜ |
 
-Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminado
-
-**Paralelización:** una vez cerrada la Fase 1, las Fases 2-5 (servidor) y la Fase 6 (cliente) pueden avanzar en paralelo, porque ambos trabajan contra el mismo contrato (`PROTOCOLO.md`).
-
----
-
-## Fase 0 — Setup y validación de riesgos
-
-**Objetivo:** tener el repo listo y confirmar, antes de diseñar más, que Java puede leer la imagen de prueba.
-
-- [ ] Estructura de carpetas, `.gitignore` (excluir `data/`, imágenes, binarios), README y CLAUDE.md iniciales
-- [ ] Confirmar JDK 21 instalado en ambas máquinas (`java -version`)
-- [ ] Decidir sistema de build: `javac` + script, o Maven/Gradle **que compile offline**
-- [ ] **Averiguar el formato de la imagen de 100 GB** (TIFF, BigTIFF, PSB, PNG…) y sus dimensiones
-- [ ] Prueba de concepto (*spike*): leer una región arbitraria de una imagen grande con `ImageReader` + `ImageReadParam.setSourceRegion`
-  - [ ] Verificar si el lector TIFF del JDK soporta BigTIFF
-  - [ ] Si no, evaluar una librería alojada localmente en `lib/` (p. ej. TwelveMonkeys) y registrar la decisión
-  - [ ] Medir memoria usada y tiempo por región
-- [ ] Conseguir imágenes de prueba: una pequeña (~50-200 MB) para desarrollo y una grande (>2 GB)
-- [ ] Estimar para la imagen de 100 GB: número de niveles, cantidad de tiles, espacio en disco y tiempo de generación
-
-**Criterio de terminado:** el spike lee regiones de una imagen grande sin cargarla completa y el formato de la imagen de prueba está confirmado.
+**Orden:** 1–3 primero, porque sin la imagen grande funcionando no hay nota. Mientras corren las ingestas largas (horas), se avanza en 4–8 en paralelo. Reparto sugerido: uno en ingesta y lectores (1, 2, 9) y otro en protocolo y cliente (3–8).
 
 ---
 
-## Fase 1 — Especificación del protocolo v0
+## Fase 1 — Lector PNG en streaming ⬜
 
-**Objetivo:** fijar el contrato entre cliente y servidor antes de programar.
+**Objetivo:** leer las imágenes de evaluación de principio a fin una sola vez, con memoria acotada por el ancho.
+**Referencias:** `PROTOCOLO.md` §22.3 · `DECISIONES.md` D-12, D-13.
 
-- [ ] Redactar `docs/PROTOCOLO.md` v0:
-  - [ ] Pila de capas: Protocol Image / WebSocket / HTTP (solo Upgrade) / TCP
-  - [ ] Comandos de control en texto (`HELLO`, `LIST`, `OPEN`, `META`, `VIEWPORT`, `GET_TILE`, `CANCEL`, `RESUME`, `ERROR`)
-  - [ ] Formato binario del mensaje `TILE` (cabecera: tipo, seq, z, x, y, formato, longitud, CRC32)
-  - [ ] Máquina de estados de la sesión (CONNECTED → READY → IMAGE_OPEN → CLOSED)
-  - [ ] Tabla de códigos de error
-  - [ ] Diagramas de secuencia: arranque, navegación, reconexión
-- [ ] Definir el sistema de coordenadas: nivel 0 = menor resolución; origen (0,0) arriba a la izquierda
-- [ ] Definir el tamaño de tile (256 o 512) y el formato (JPEG/PNG) y registrarlo en DECISIONES.md
-- [ ] Decidir el modelo de concurrencia (Virtual Threads o NIO) y registrarlo en DECISIONES.md
+- [X ] `PngSource`: chunks, `Inflater`, 5 filtros de fila, RGB de 8 bits
+- [ X] `Fuentes.abrir`: elige el lector por la firma del archivo, no por la extensión
+- [ X] `IngestMain` usa la interfaz `ImageSource`, no una clase concreta
+- [X ] Herramienta de verificación: comparar `PngSource` contra el lector del JDK, píxel por píxel
+- [ X] Verificación sobre las 10 imágenes pequeñas reales: todas idénticas
+- [ X] Ingesta completa de la imagen de 4 GB (36 743 px): anotar tiempo, disco y memoria
+- [ X] `--leer` sobre la imagen de 93 GB: anotar velocidad y memoria
+- [ X] Registrar en `DECISIONES.md` lo que se decida en la fase
+- [ X] Merge a `main`
 
-**Criterio de terminado:** ambos aprueban PROTOCOLO.md v0 y pueden programar sin consultarse sobre formatos.
+**Criterio de terminado:** la verificación da idéntico en todas las imágenes pequeñas y la de 93 GB se lee completa sin errores.
+
+**Evidencia:**
+
+Prueba	Resultado
+Verificación píxel por píxel (7 imágenes, 104 a 5775 px)	Idénticas al lector del JDK
+Lectura completa (12 900 y 18 305 px)	Sin errores
+Ingesta 5775 px	723/723 tiles, 0.8 s, 230 MB
+Ingesta 4 GB (36 743 px)	27 660/27 660 tiles, 109 s, 1179 MB en disco, 250 MB de memoria
+Velocidad del lector	~1500 MB/s desde caché; ~40 MB/s desde el disco duro (el límite es el disco)
+---
+
+## Fase 2 — Almacenamiento empaquetado + ingesta reanudable ⬜
+
+**Objetivo:** la imagen de 93 GB genera 635 214 tiles; como archivos sueltos son lentos de escribir, copiar y abrir.
+
+- [ ] Un archivo por nivel (`z.pack`) + índice `(x, y) → (offset, longitud)`
+- [ ] `TileStore` lee del paquete; el servidor no cambia (solo usa `TileStore`)
+- [ ] Ingesta reanudable: punto de control por franja; si se interrumpe, continúa donde quedó
+- [ ] Barra de progreso con tiempo estimado restante
+- [ ] Ingesta completa de las imágenes de 17, 28, 55 y 93 GB
+
+**Criterio:** la de 93 GB queda procesada y navegable; tiempo, disco y memoria anotados.
 
 ---
 
-## Fase 2 — Servidor HTTP propio
+## Fase 3 — Legibilidad ⬜
 
-**Objetivo:** servir los archivos del cliente sobre sockets TCP, atendiendo múltiples clientes.
+**Objetivo:** que los dígitos de 3×5 px se lean claramente en la máxima definición.
 
-- [ ] `ServerSocket` + ejecutor de hilos virtuales (o canal asíncrono, según la Fase 1)
-- [ ] Parser de peticiones HTTP/1.1 (línea de petición, cabeceras) — RFC 9112
-- [ ] Servir archivos estáticos desde `web/` con `Content-Type` y `Content-Length` correctos
-- [ ] Protección contra *path traversal* (`../`)
-- [ ] Respuestas 200, 400, 404, 405, 500
-- [ ] Soporte de `Connection: keep-alive`
-- [ ] Log de peticiones
+- [ ] Tiles PNG sin pérdida (al menos en los niveles altos)
+- [ ] Zoom más allá de 1:1, ampliando sin suavizado (`imageSmoothingEnabled = false`)
+- [ ] Coordenada de la imagen bajo el cursor
+- [ ] Verificar visualmente con las imágenes pequeñas
 
-**Criterio de terminado:** el navegador carga `index.html` con su JS y CSS, con varias pestañas a la vez.
+**Criterio:** en la imagen de 4 GB se lee cualquier número al máximo zoom.
 
 ---
 
-## Fase 3 — WebSocket (RFC 6455)
+## Fase 4 — Cabecera v2 + EDF ⬜
 
-**Objetivo:** hacer el Upgrade y manejar frames manualmente.
+**Referencia:** `PROTOCOLO.md` §8, §14.
 
-- [ ] Detectar `Upgrade: websocket` y validar las cabeceras
-- [ ] Calcular `Sec-WebSocket-Accept` (SHA-1 + Base64 con el GUID del RFC) y responder `101 Switching Protocols`
-- [ ] Lectura de frames: FIN, opcode, máscara (obligatoria del cliente al servidor), longitudes de 7, 16 y 64 bits
-- [ ] Escritura de frames de texto (0x1) y binarios (0x2), sin máscara
-- [ ] Reensamblado de mensajes fragmentados (opcode 0x0)
-- [ ] Frames de control: PING (0x9), PONG (0xA), CLOSE (0x8) con código
-- [ ] Heartbeat periódico y cierre de conexiones zombie
-- [ ] Escritura thread-safe por conexión (un único escritor o un lock)
+- [ ] Subprotocolo `pimg.v2`; cabecera binaria de 28 bytes con `NUM`
+- [ ] Cliente: valida `NUM` y cuenta saltos (`PERD`)
+- [ ] `PlanificadorEDF` en `src/pimg/transporte/` (cola de prioridad por plazo)
+- [ ] `SesionPimg` usa EDF; métrica `TARDE`
 
-**Criterio de terminado:** echo funcional con el `WebSocket` nativo del navegador, con mensajes grandes y cierre limpio.
+**Criterio:** el orden de envío es del centro hacia afuera y `TARDE` se reporta.
 
 ---
 
-## Fase 4 — Ingesta y pirámide de tiles
+## Fase 5 — Red simulada ⬜
 
-**Objetivo:** convertir una imagen gigante en una pirámide multirresolución sin cargarla completa en memoria.
+**Referencia:** `PROTOCOLO.md` §16.
 
-- [ ] Lectura por franjas o regiones según el formato confirmado en la Fase 0 (una sola pasada si el formato es secuencial)
-- [ ] Generación del nivel máximo (tiles de resolución original)
-- [ ] Construcción ascendente de niveles: cada 4 tiles se reducen a 1
-- [ ] Formato de almacenamiento:
-  - [ ] Versión simple: `tiles/{img}/{z}/{x}_{y}.jpg` (para desarrollo)
-  - [ ] Versión final: un archivo empaquetado por nivel + índice de offsets (necesaria por la cantidad de tiles de la imagen de 100 GB)
-- [ ] Generar `meta.json` por imagen (ancho, alto, tile size, niveles, formato)
-- [ ] `WatchService` sobre `data/input/` + cola de procesamiento en un pool separado
-- [ ] Estados de la imagen: `PROCESSING` (con %), `READY`, `FAILED`
-- [ ] Reanudación: si el proceso se interrumpe, no empezar desde cero
-- [ ] Medir tiempo y espacio con la imagen grande
+- [ ] `RedSimulada`: pérdida (%), ancho de banda (KB/s) y latencia (ms)
+- [ ] Servidor con `--sim`; comando `SIM` / `SIM_OK`
+- [ ] Controles en el panel y opción "cliente lento"
 
-**Criterio de terminado:** una imagen nueva copiada en `data/input/` termina en estado `READY` con su pirámide completa, usando memoria acotada.
+**Criterio:** con 5 % de pérdida, el panel muestra `PERD` subiendo y tiles faltantes.
 
 ---
 
-## Fase 5 — Protocol Image en el servidor
+## Fase 6 — FEC con paridad XOR ⬜
 
-**Objetivo:** implementar la lógica del protocolo y el control de resolución por cliente.
+**Referencia:** `PROTOCOLO.md` §11.
 
-- [ ] Parser y despachador de comandos de texto
-- [ ] Sesión por cliente: imagen abierta, nivel actual, tiles enviados, último `seq`
-- [ ] `LIST`, `OPEN` → `META`
-- [ ] `VIEWPORT` → cálculo de tiles visibles, orden del centro hacia afuera, omitir los ya enviados
-- [ ] Cola de envío por cliente con límite (backpressure) y descarte al llegar un `seq` nuevo
-- [ ] `GET_TILE`, `CANCEL`, `RESUME`
-- [ ] Caché LRU de tiles en RAM, compartida y con límite en bytes
-- [ ] Construcción del mensaje binario `TILE` con CRC32
-- [ ] Manejo de errores con `ERROR|CODE|MSG`
+- [ ] `FecXor`: grupos entrelazados y cálculo de paridad
+- [ ] Mensaje binario `PARIDAD` (`TIPO = 0x02`)
+- [ ] Cliente: conserva los últimos 32 tiles y reconstruye; contador `REC`
 
-**Criterio de terminado:** un cliente de prueba navega una imagen y el servidor solo envía los tiles necesarios; se cancelan los obsoletos.
+**Criterio:** con 5 % de pérdida simulada, `REC` sube y la mayoría de los tiles se recuperan sin pedirlos.
 
 ---
 
-## Fase 6 — Cliente web
+## Fase 7 — Controlador PI ⬜
 
-**Objetivo:** visualizar y navegar la imagen gestionando la memoria del navegador.
+**Referencia:** `PROTOCOLO.md` §12.
 
-- [ ] `index.html` + CSS; todas las librerías servidas localmente (sin CDN)
-- [ ] Conexión WebSocket y flujo `HELLO` → `LIST` → `OPEN`
-- [ ] Selector de imágenes con su estado (incluido el % de procesamiento)
-- [ ] Render en `<canvas>` según nivel y desplazamiento
-- [ ] Arrastre (pan) con throttling; cambio de nivel con debouncing
-- [ ] Envío de `VIEWPORT` con `seq` creciente; descarte de tiles con `seq` viejo
-- [ ] Decodificación de la cabecera binaria y verificación del CRC32
-- [ ] Caché LRU con límite y liberación explícita (`ImageBitmap.close()`)
-- [ ] Relleno temporal con el nivel anterior escalado mientras llegan los nuevos tiles
-- [ ] Tabla de peticiones pendientes con timeout y reintento (`GET_TILE`)
-- [ ] Reconexión con backoff exponencial + `RESUME`
-- [ ] Panel de depuración: tiles en memoria, bytes recibidos, nivel actual, peticiones pendientes
+- [ ] Cliente: `REPORT` cada 100 ms (`MAX`, `PERD`, `COLA`, `DEC`, `JIT`, `REC`)
+- [ ] `ControladorPI` con anti-windup; pacing en el emisor; `CTRL`
+- [ ] Gráficas de `R` y `Q` en el panel
+- [ ] Sintonía de `Kp` y `Ki` con un escalón de ancho de banda
 
-**Criterio de terminado:** se navega la imagen con fluidez, el panel muestra memoria acotada y los bytes recibidos son muy inferiores al tamaño de la imagen.
+**Criterio:** ante un escalón de ancho de banda, `Q` vuelve a 8; sobrepico y tiempo de establecimiento anotados.
 
 ---
 
-## Fase 7 — Robustez y pruebas
+## Fase 8 — Filtros de Bloom y reanudación ⬜
 
-**Objetivo:** demostrar concurrencia, eficiencia y tolerancia a fallos.
+**Referencia:** `PROTOCOLO.md` §13, §15.
 
-- [ ] Varios clientes simultáneos (pestañas y/o cliente de carga en Java)
-- [ ] Simular caída de conexión y verificar la reconexión
-- [ ] Cliente lento: verificar backpressure
-- [ ] Medir: bytes transferidos vs. tamaño total, tiempos de respuesta, uso de RAM del servidor y del navegador
-- [ ] Prueba completa con la imagen de ~100 GB
-- [ ] Prueba del sistema **sin internet**
-- [ ] Revisar fugas de memoria en una sesión larga
+- [ ] `FiltroBloom` (Java) y `bloom.js`: coinciden con los vectores de prueba de §13.3
+- [ ] Comando `BLOOM`; lógica `tiene(t)` con `enviadosRecientes`
+- [ ] `RESUME` tras reconectar
+- [ ] Re-declaración de vista y cambio de semilla
+- [ ] Retirar `GET_TILE` y `EVICT`
 
-**Criterio de terminado:** resultados medidos y registrados, listos para el documento.
+**Criterio:** tras reiniciar el servidor, el cliente reanuda sin que se reenvíen los tiles que conserva.
 
 ---
 
-## Fase 8 — Documento del protocolo (35%)
+## Fase 9 — Extras ⬜
 
-**Objetivo:** documento coherente, conciso y con referencias.
-
-- [ ] Problema y justificación de la pirámide / quadtree implícito
-- [ ] Arquitectura y pila de capas
-- [ ] Especificación completa del Protocol Image (desde PROTOCOLO.md)
-- [ ] Concurrencia, cachés y gestión de memoria
-- [ ] Manejo de errores y confiabilidad
-- [ ] Resultados de pruebas (Fase 7)
-- [ ] Referencias: RFC 9110, RFC 9112, RFC 6455, RFC 9293, RFC 3174, RFC 4648, OSGeo TMS, IIIF Image API, Deep Zoom
-
-**Criterio de terminado:** documento revisado por ambos y consistente con el código.
+- [ ] ARC en `TileCache` (LRU como opción para comparar)
+- [ ] Ingesta automática con `WatchService` (`PROCESSING` con %, `FAILED`)
+- [ ] "Ir a x, y" en el cliente
 
 ---
 
-## Fase 9 — Preparación de entrega y defensa
+## Fase 10 — Pruebas finales ⬜
 
-- [ ] Pirámide de la imagen de 100 GB **ya generada** antes de la calificación
-- [ ] Imagen pequeña preparada para demostrar la ingesta en vivo
-- [ ] Guion de demo: carga inicial → navegación → panel de depuración → varios clientes → reconexión → ingesta
-- [ ] Compilación limpia desde cero en una máquina sin internet
-- [ ] Entrega en GES + agendar calificación
-- [ ] Repaso de preguntas probables (por qué WebSocket, por qué TCP, por qué quadtree implícito, Virtual Threads vs NIO)
+- [ ] Las 4 imágenes de evaluación navegables
+- [ ] Varios clientes simultáneos
+- [ ] Sesión larga (sin fugas de memoria)
+- [ ] JDK 21, sin internet, compilando desde cero
+- [ ] Experimentos de `PROTOCOLO.md` §25.2 con sus números
 
 ---
 
-## Riesgos abiertos
+## Fase 11 — Documento final y defensa ⬜
 
-| Riesgo | Impacto | Mitigación |
-|---|---|---|
-| Java no lee el formato de la imagen de 100 GB | Crítico | Spike en la Fase 0; librería local si hace falta |
-| Tiempo de generación de la pirámide (horas) | Alto | Reanudación; generar con anticipación |
-| Espacio en disco insuficiente | Alto | Estimar en la Fase 0; compresión JPEG |
-| Demasiados archivos de tiles | Medio | Almacenamiento empaquetado por nivel |
-| Dependencias que requieran internet al compilar | Alto | Todo en el repo o en `lib/`; probar offline |
+- [ ] `PROTOCOLO.md` con resultados reales y estados actualizados (✅)
+- [ ] Diagramas de secuencia de los cuatro mecanismos
+- [ ] Guion de la demostración (qué mostrar y en qué orden)
+- [ ] Repaso de las preguntas de `PROTOCOLO.md` §24
