@@ -14,7 +14,7 @@ public final class IngestMain {
         if (args.length == 3 && args[0].equals("--plan")) {
             imprimirPiramide(new PyramidLayout(Integer.parseInt(args[1]), Integer.parseInt(args[2]), T));
         } else if (args.length == 2 && args[0].equals("--leer")) {
-            try (ImageIOSource fuente = new ImageIOSource(Path.of(args[1]))) {
+            try (ImageSource fuente = Fuentes.abrir(Path.of(args[1]))) {
                 medirLectura(fuente);
             }
         } else if (args.length == 2) {
@@ -33,7 +33,7 @@ public final class IngestMain {
         }
         int hilos = Runtime.getRuntime().availableProcessors();
 
-        try (ImageIOSource fuente = new ImageIOSource(archivo)) {
+        try (ImageSource fuente = Fuentes.abrir(archivo)) {
             PyramidLayout piramide = new PyramidLayout(fuente.ancho(), fuente.alto(), T);
             TileStore destino = new TileStore(SALIDA, id);
             destino.prepararNiveles(piramide.niveles());
@@ -86,7 +86,8 @@ public final class IngestMain {
         System.out.printf("Total de tiles: %d%n%n", p.tilesTotales());
     }
 
-    private static void medirLectura(ImageIOSource fuente) throws Exception {
+    private static void medirLectura(ImageSource fuente) throws Exception {
+        System.out.println("Lector: " + fuente.descripcion());
         Runtime rt = Runtime.getRuntime();
         int franjas = Math.ceilDiv(fuente.alto(), T);
         long inicio = System.nanoTime();
@@ -96,9 +97,10 @@ public final class IngestMain {
             fuente.leerFranja(y, Math.min(T, fuente.alto() - y));
             memoriaMaxMB = Math.max(memoriaMaxMB, (rt.totalMemory() - rt.freeMemory()) >> 20);
         }
-        System.out.printf("Total: %.1f s | lectura: %.1f s | conversion: %.1f s (%s)%n",
-                (System.nanoTime() - inicio) / 1e9,
-                fuente.segundosLectura(), fuente.segundosConversion(), fuente.metodoConversion());
+        double total = (System.nanoTime() - inicio) / 1e9;
+        double mb = (double) fuente.ancho() * fuente.alto() * 3 / (1 << 20);
+        System.out.printf("Total: %.1f s (%.0f MB/s de pixeles) | lectura: %.1f s | conversion: %.1f s%n",
+                total, mb / total, fuente.segundosLectura(), fuente.segundosConversion());
         System.out.printf("Memoria max. observada: %d MB (limite %d MB)%n", memoriaMaxMB, rt.maxMemory() >> 20);
     }
 }

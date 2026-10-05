@@ -1,2 +1,2 @@
 @echo off
-java -Xmx512m -cp out pimg.ingest.IngestMain %*
+java -Xmx1g -cp out pimg.ingest.IngestMain %*

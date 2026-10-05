@@ -54,11 +54,11 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 ### D-11 · `meta.json` se escribe al final · 2026-09-23 · Vigente
 - **Por qué:** su existencia significa `READY`; una pirámide a medio generar nunca aparece en el catálogo.
 
-### D-12 · Lector PNG propio en streaming · 2026-09-24 · Propuesta
+### D-12 · Lector PNG propio en streaming · 2026-09-24 · Vigente (implementada)
 - **Contexto:** la imagen de 93 GB es PNG sin comprimir (bloques *stored*), 176 393 × 176 393.
 - **Por qué:** el lector del JDK vuelve a descomprimir desde el inicio en cada lectura por región (costo cuadrático).
 
-### D-13 · Formatos soportados explícitos, detectados por firma · 2026-09-24 · Propuesta
+### D-13 · Formatos soportados explícitos, detectados por firma · 2026-09-24 · Vigente (implementada)
 - **Decisión:** PNG (lector propio), TIFF/JPEG/BMP (`ImageIO`), PSB opcional; lo demás se rechaza con `FAILED`.
 - **Por qué:** soportar "cualquier formato" no es realista; la interfaz `ImageSource` es el punto de extensión.
 
@@ -127,3 +127,10 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 ### D-30 · ARC en la caché del servidor · 2026-09-23 · Propuesta
 - **Descartado:** LRU como aporte (usado por otros grupos).
 - **Por qué:** LRU no resiste barridos: un cliente recorriendo el nivel máximo expulsaría lo que usan todos. Se mantendrá LRU como opción para comparar la tasa de aciertos.
+### D-31 · No verificar el CRC de cada chunk del PNG de entrada · 2026-10-04 · Vigente
+- **Por qué:** obligaría a recorrer los 93 GB con un cálculo extra. La integridad del flujo de píxeles la comprueba igual el Adler-32 de zlib, que `Inflater` valida al final. El CRC32 que importa para el protocolo es el de cada tile (D-16).
+
+### D-32 · Ingesta con `-Xmx1g` · 2026-10-04 · Vigente
+- **Contexto:** la memoria de la ingesta crece con el ancho de la imagen (franjas de 256 filas a todo lo ancho).
+- **Medido:** 250 MB con la imagen de 4 GB (36 743 px). La de 93 GB mide 176 393 px de ancho y quedaría cerca de 512 MB.
+- **Decisión:** `ingest.bat` usa 1 GB para tener margen. El servidor sigue con 512 MB.
