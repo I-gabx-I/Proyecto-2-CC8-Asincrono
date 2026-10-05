@@ -1,73 +1,82 @@
 # PIMG — Servidor Asíncrono de Imágenes de Ultra Alta Resolución
 
-Proyecto 2 de **Ciencias de la Computación VIII**.
-**Autores:** Marcos Masaya, Samuel Caal
+Proyecto 2 de **Ciencias de la Computación VIII** · **Autores:** Marcos Masaya, Samuel Caal
 
-Servidor en Java 21 que permite explorar imágenes de cientos de gigabytes desde el navegador, transfiriendo solo los fragmentos (*tiles*) necesarios para la vista actual. Usa HTTP/1.1 para los archivos iniciales y un protocolo propio (**PIMG**) sobre WebSocket para la transmisión de la imagen.
+Servidor en **Java 21, sin dependencias externas**, que permite explorar desde el navegador imágenes de decenas de gigabytes transfiriendo solo los *tiles* necesarios para la vista actual. HTTP/1.1 (implementado a mano) entrega los archivos iniciales; la imagen viaja por un protocolo propio, **PIMG**, sobre WebSocket (también implementado a mano).
 
 ## Documentación
 
 | Documento | Contenido |
 |---|---|
-| [`docs/PLAN.md`](docs/PLAN.md) | Plan de fases y estado |
-| [`docs/PROTOCOLO.md`](docs/PROTOCOLO.md) | Especificación del protocolo PIMG (contrato cliente-servidor) |
-| [`docs/DECISIONES.md`](docs/DECISIONES.md) | Registro de decisiones técnicas y su justificación |
+| [`docs/PROTOCOLO.md`](docs/PROTOCOLO.md) | **Especificación de PIMG y fuente de verdad del proyecto**: mensajes, cabecera binaria, estados, cachés, ingesta, transporte v2, decisiones, resultados y pendientes |
+| [`docs/PLAN.md`](docs/PLAN.md) | Plan de fases original |
+| [`docs/DECISIONES.md`](docs/DECISIONES.md) | Registro de decisiones técnicas |
+| [`CLAUDE.md`](CLAUDE.md) | Contexto para asistentes de IA |
 
 ## Requisitos
 
-- JDK 21 (`java -version` y `javac -version`)
-- Sin dependencias externas: compila y ejecuta sin internet
+- **JDK 21** (`java -version`, `javac -version`). Con un JDK más nuevo también compila, porque `build.bat` usa `--release 21`, pero la prueba final debe hacerse con JDK 21.
+- Windows (scripts `.bat`). Funciona sin internet.
+- Espacio en disco: imagen original + su pirámide (ver `docs/PROTOCOLO.md` §16).
 
-## Compilar y ejecutar
+## Uso rápido (PowerShell, desde la raíz del repositorio)
+
+**1. Compilar**
 
 ```powershell
-# Windows (PowerShell)
-.\build.ps1
-java -cp out cc8.pimg.Main --port=8080
+.\build.bat
 ```
 
-```sh
-# Linux / macOS / Git Bash
-./build.sh
-java -cp out cc8.pimg.Main --port=8080
+**2. Procesar una imagen** (genera la pirámide en `data/tiles/<id>/`)
+
+```powershell
+.\ingest.bat data\input\eso1242a.tif eso1242a
 ```
 
-**Pruebas del protocolo:**
-```sh
-java -cp out cc8.pimg.protocol.ProtocolSelfTest
+Otros modos:
+
+```powershell
+.\ingest.bat --plan 176393 176393          # calcula niveles y tiles sin leer la imagen
+.\ingest.bat --leer data\input\imagen.tif  # solo mide la velocidad de lectura
 ```
 
-**Spike de lectura de imágenes grandes (Fase 0):**
-```sh
-java -Xmx2g -cp out cc8.pimg.tools.RegionReadSpike <ruta-imagen> [x y ancho alto]
+**3. Iniciar el servidor**
+
+```powershell
+.\run.bat
+```
+
+Abrir `http://localhost:8080`. Arrastrar para mover, rueda para cambiar de nivel, **G** para ver la cuadrícula de tiles.
+
+**Inspeccionar la cabecera de un PNG** (sin cargar la imagen):
+
+```powershell
+javac -d tools\out tools\PngInfo.java
+java -cp tools\out PngInfo "data\input\imagen.png"
 ```
 
 ## Estructura
 
 ```
-├── build.ps1 / build.sh        Scripts de compilación
-├── docs/                       Plan, protocolo y decisiones
-├── server/src/cc8/pimg/
-│   ├── Main.java               Punto de entrada
-│   ├── config/                 Configuración por argumentos (--port, --web, --data)
-│   ├── protocol/               Contrato PIMG: mensajes, cabecera binaria, geometría, errores
-│   ├── http/                   (Fase 2) Servidor HTTP/1.1 y archivos estáticos
-│   ├── websocket/              (Fase 3) Handshake y frames RFC 6455
-│   ├── session/                (Fase 5) Estado por cliente y despacho de comandos
-│   ├── pyramid/                (Fase 4) Ingesta y generación de la pirámide de tiles
-│   ├── cache/                  (Fase 5) Caché LRU de tiles en RAM
-│   └── tools/                  Herramientas de desarrollo (spikes)
-├── web/
-│   ├── index.html              Página del visor
-│   ├── js/protocol.js          Contrato PIMG del lado del cliente
-│   ├── css/                    Estilos
-│   └── lib/                    Librerías de terceros alojadas localmente (sin CDN)
-└── data/                       (ignorado por git) input/ = imágenes nuevas, tiles/ = pirámides
+├── build.bat / run.bat / ingest.bat
+├── docs/                   PROTOCOLO.md (especificación), PLAN.md, DECISIONES.md
+├── src/pimg/
+│   ├── Main.java           Arma el servidor: catálogo, caché, router, WebSocket
+│   ├── http/               HTTP/1.1 propio: parser, respuestas, archivos estáticos, router
+│   ├── websocket/          RFC 6455 propio: handshake, frames, heartbeat, cierre
+│   ├── protocol/           PIMG: mensajes, cabecera binaria, vista, sesión por cliente
+│   ├── tiles/              Pirámide: geometría, almacenamiento en disco, catálogo, caché
+│   └── ingest/             Construcción de la pirámide en una sola pasada
+├── web/                    Cliente: index.html, css/, js/ (módulos ES, sin librerías)
+├── tools/                  Herramientas de prueba (PngInfo, pruebas de lectura)
+└── data/                   (ignorado por git) input/ = originales, tiles/ = pirámides
 ```
 
-## Convenciones de trabajo
+Regla de dependencias: `protocol → websocket → http` y `protocol → tiles ← ingest`. `http` no conoce WebSocket y `tiles` no conoce sockets; solo `Main` conecta todo.
 
-- `main` siempre compila. Cada tarea se trabaja en una rama (`feat/...`, `fix/...`, `docs/...`) y se integra con Pull Request.
-- Mensajes de commit: `tipo: descripción` con `feat`, `fix`, `docs`, `test`, `chore`, `refactor`.
-- Un cambio de formato del protocolo se hace **primero** en `docs/PROTOCOLO.md` y luego en `protocol/` (Java) y `web/js/protocol.js`.
-- Las imágenes y tiles **nunca** se suben al repositorio.
+## Convenciones
+
+- `main` siempre compila.
+- Commits: `tipo: descripción` con `feat`, `fix`, `docs`, `test`, `chore`, `refactor`.
+- Un cambio de formato del protocolo se hace **primero** en `docs/PROTOCOLO.md` y luego en `src/pimg/protocol/` y `web/js/pimg.js`.
+- Las imágenes y pirámides **nunca** se suben al repositorio (`data/` está en `.gitignore`).
