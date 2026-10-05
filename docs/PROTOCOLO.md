@@ -2,19 +2,20 @@
 
 **Proyecto:** Servidor Asíncrono de Imágenes de Ultra Alta Resolución — Ciencias de la Computación VIII
 **Autores:** Marcos Masaya, Samuel Caal
-**Versión del protocolo:** 1 (`pimg.v1`) · **Documento:** v1.0
+**Versión del protocolo:** 2 (`pimg.v2`) · **Documento:** v2.0 · **Fecha:** 2 de octubre de 2026
 **Stack:** Java 21 sin dependencias externas (servidor) · HTML/CSS/JS con módulos ES (cliente)
 
 > Este documento es el **contrato** entre servidor y cliente y la **fuente de verdad** del proyecto.
-> Un cambio de formato se hace primero aquí y luego en el código (`src/pimg/protocol/` y `web/js/pimg.js`).
+> Un cambio de formato se hace primero aquí y luego en el código (`src/pimg/` y `web/js/`).
 > Las palabras **DEBE**, **NO DEBE** y **PUEDE** se usan en el sentido de RFC 2119.
 >
-> **Estado de cada sección:** ✅ implementado y probado · 🟨 implementado parcialmente · 📝 diseño aprobado, no implementado.
+> **Estado de cada parte:** ✅ implementado y probado (v1) · 🔁 implementado en v1, cambia en v2 · 📝 diseño aprobado, no implementado.
 
 ---
 
 ## Índice
 
+0. Qué cambió de v1 a v2 (y por qué)
 1. Objetivo y contexto de evaluación
 2. Terminología
 3. Pila de protocolos
@@ -22,46 +23,103 @@
 5. Modelo de coordenadas (pirámide)
 6. Vista (viewport)
 7. Mensajes de control (texto)
-8. Mensaje de tile (binario)
+8. Mensajes binarios
 9. Máquina de estados de la sesión
-10. Modelo de envío del servidor
-11. Cachés
-12. Comportamiento del cliente
-13. Heartbeat y cierre
-14. Códigos de error
-15. Límites y parámetros
-16. Ingesta y almacenamiento
-17. Transporte PIMG v2 (control y recuperación) 📝
-18. Decisiones de diseño
-19. Resultados medidos
-20. Pendientes
-21. Referencias
-22. Historial
+10. Arquitectura del envío: cómo encajan los cuatro mecanismos
+11. Mecanismo 1 — FEC con paridad XOR entrelazada
+12. Mecanismo 2 — Control del ritmo con controlador PI
+13. Mecanismo 3 — Sincronización de caché con filtros de Bloom
+14. Mecanismo 4 — Planificación por plazos (EDF)
+15. Recuperación de una pérdida: el camino completo
+16. Red simulada
+17. Cachés
+18. Comportamiento del cliente
+19. Heartbeat y cierre
+20. Códigos de error
+21. Límites y parámetros
+22. Ingesta y almacenamiento
+23. Decisiones de diseño
+24. Preguntas previsibles en la defensa
+25. Resultados medidos y experimentos pendientes
+26. Estado de implementación
+27. Referencias
+28. Historial
+
+---
+
+## 0. Qué cambió de v1 a v2 (y por qué)
+
+**v1** (implementada y probada) decide **qué** tiles enviar: el cliente informa su vista, el servidor envía los tiles visibles del centro hacia afuera, recuerda lo que ya envió y cancela lo pendiente de vistas abandonadas.
+
+**v2** agrega **cómo** se controla y se recupera la transmisión. El ingeniero aprobó cuatro mecanismos, que son el núcleo del 60 % "protocolo" de la evaluación:
+
+| # | Mecanismo | Pregunta que responde |
+|---|---|---|
+| 1 | **FEC con paridad XOR entrelazada** (RFC 5109) | ¿Cómo recupero un tile perdido o corrupto **sin pedirlo de nuevo**? |
+| 2 | **Controlador PI** sobre la ocupación del búfer de recepción (RFC 3550, PIE RFC 8033) | ¿A qué **ritmo** envío para no saturar al cliente ni a la red? |
+| 3 | **Filtros de Bloom** para el estado de caché del cliente (Fan et al., 2000) | ¿Cómo sabe el servidor **qué tiene el cliente** sin listas enormes, incluso tras reconectar? |
+| 4 | **Planificación por plazos, EDF** (Liu y Layland, 1973) | ¿En qué **orden** envío para que lo importante llegue primero? |
+
+### 0.1 Se agrega
+
+| Elemento | Dónde | Por qué |
+|---|---|---|
+| Subprotocolo `pimg.v2`, `HELLO V:2` | §4, §7 | Distinguir clientes v1 y v2 |
+| Campo `NUM` en todo mensaje binario (cabecera de 24 → 28 bytes) | §8.1 | Número de secuencia de envío, como el de RTP (RFC 3550): permite medir pérdidas, fechar el filtro de Bloom y calcular la ocupación del búfer |
+| Mensaje binario **`PARIDAD`** (`TIPO = 0x02`) | §8.2, §11 | Lleva la paridad XOR de un grupo de tiles y los datos para reconstruir cualquiera de ellos |
+| Mensaje **`REPORT`** (C→S, cada 100 ms) | §7, §12 | Reporte de receptor al estilo RTCP: la medición que usa el controlador PI |
+| Mensaje **`CTRL`** (S→C) | §7, §12 | El servidor publica la tasa y el error del controlador para graficarlos en el panel |
+| Mensaje **`BLOOM`** (C→S) | §7, §13 | El cliente envía el resumen compacto de su caché |
+| **`RESUME`** con filtro de Bloom | §7, §13.6 | Reanudar una sesión tras reconectar sin reenviar lo que el cliente conserva |
+| Mensaje **`SIM`** (C→S) y red simulada | §7, §16 | Sobre TCP en localhost no hay pérdidas ni congestión: sin simulación, FEC y PI no se pueden demostrar |
+| Cola de envío **por plazos** (cola de prioridad) | §14 | Reemplaza la cola FIFO ordenada por distancia |
+| **Re-declaración de vista** | §15 | Camino de recuperación cuando FEC no alcanza, sin pedir tiles específicos |
+| Paquete `src/pimg/transporte/` y `web/js/transporte/` | §10.3 | Los mecanismos como lógica pura, probable por separado |
+
+### 0.2 Se quita
+
+| Elemento | Estaba en | Por qué se quita |
+|---|---|---|
+| Diseño v2 anterior: `TSN`, `ACK` acumulativo, `SACK`, ventana `cwnd`, Slow Start, AIMD, RTO (RFC 6298), `FWD`, recuperación parcial por relevancia, control de flujo por créditos | §17 de v1.0 (solo diseño) | El ingeniero indicó que esos mecanismos ya estaban **tomados por otros grupos**. Además, sobre TCP un segundo sistema de confirmaciones y retransmisiones duplica lo que TCP ya hace |
+| Comando **`GET_TILE`** | §7 de v1 | Era una petición explícita de retransmisión de un tile (equivale a un NACK). En v2 la recuperación es por FEC (§11) o por re-declaración de vista (§15) |
+| Comando **`EVICT`** | §7 de v1 | Reemplazado por `BLOOM`: en vez de una lista de claves expulsadas (~3 KB para 300 tiles), un resumen de tamaño fijo (512 B) |
+| **Registro exacto de enviados** como única fuente de verdad | §7.3 de v1 | Reemplazado por: filtro de Bloom del cliente + lista de lo enviado después de la última instantánea (§13.4) |
+
+### 0.3 Se mantiene sin cambios
+
+Pila HTTP/WebSocket propia (§3–4), pirámide y coordenadas (§5), cálculo de la vista (§6), cancelación por `SEQ` (§7.3), CRC32 extremo a extremo (§8), máquina de estados (§9, más `RESUME`), heartbeat (§19), ingesta (§22).
 
 ---
 
 ## 1. Objetivo y contexto de evaluación
 
-PIMG permite que un navegador explore imágenes de decenas o cientos de gigabytes **recibiendo solo los tiles que necesita para su vista actual**. El servidor mantiene, por cada cliente, el estado de lo que está viendo y de lo que ya le envió, y decide qué enviar, en qué orden y qué cancelar.
+PIMG permite que un navegador explore imágenes de decenas de gigabytes **recibiendo solo los tiles que necesita para su vista actual**. El servidor mantiene, por cada cliente, el estado de lo que está viendo y de lo que ya tiene, y decide qué enviar, en qué orden, a qué ritmo y cómo recuperar lo que se pierde.
 
-### 1.1 Requisitos del curso que condicionan el diseño
+### 1.1 Requisitos que condicionan el diseño
 
-- El servidor (Java 20/21) atiende **múltiples clientes** y tiene un **protocolo propio** para controlar la resolución de cada cliente.
-- HTTP se usa **solo** para los archivos iniciales; la imagen viaja por el protocolo propio.
-- Ninguna petición a servidores externos; toda librería del frontend se aloja en el servidor. Se califica **sin internet**.
+- Servidor Java 20/21 que atiende **múltiples clientes** con un **protocolo propio** para controlar la resolución de cada cliente.
+- HTTP **solo** para los archivos iniciales; la imagen viaja por el protocolo propio.
+- Ninguna petición externa; toda librería del frontend alojada en el servidor. Se califica **sin internet**.
 - La imagen **nunca** se envía completa en máxima calidad. El cliente **gestiona su memoria**.
-- **No es una galería ni un simple zoom.** Tener niveles, versiones o coordenadas de la imagen **es solo la base y no puntúa**.
-- Evaluación: **40 % funcionamiento y usabilidad, 60 % protocolo.** El protocolo debe gestionar la transmisión de forma eficiente y **no dejar al usuario desatendido**, incluso en la máxima definición.
-- El protocolo debe usar o **adaptar** mecanismos de control y recuperación: Selective Repeat, Go-Back-N, SACK, ventana deslizante, control de flujo, control de congestión, Slow Start, etc.
-- Se valida con las herramientas del navegador (DevTools): cantidad de peticiones y caché según las políticas del protocolo.
-- Imágenes de evaluación: 17 GB, 28 GB, 55 GB y 93 GB (punteo máximo 20, 40, 80 y 115). Son **números dibujados con dígitos de 3×5 px** que deben **leerse claramente** en la máxima definición.
-- El documento del protocolo debe explicar campos, estructuras, algoritmos y mecanismos de control (referencia: RFC 9293).
+- **No es una galería ni un simple zoom.** Niveles, versiones o coordenadas son **la base y no puntúan**.
+- Evaluación: **40 % funcionamiento y usabilidad, 60 % protocolo.** El protocolo debe gestionar la transmisión eficientemente y **no dejar al usuario desatendido**, incluso en la máxima definición.
+- El protocolo debe usar o **adaptar** mecanismos de control y recuperación.
+- Se valida con las herramientas del navegador (DevTools).
+- Imágenes de evaluación: 17, 28, 55 y 93 GB (punteo máximo 20, 40, 80 y 115). Son **números con dígitos de 3×5 px** que deben **leerse claramente** en la máxima definición.
+- El documento debe explicar campos, estructuras, algoritmos y mecanismos de control (referencia: RFC 9293).
 
 ### 1.2 Idea central
 
-La transmisión se trata como un **problema de transporte en unidades de tile**: el cliente informa su vista, el servidor decide qué enviar, cancela el trabajo de vistas abandonadas y (en v2) controla el ritmo con ventana deslizante, confirmaciones selectivas, control de flujo y de congestión, y recuperación **parcial por relevancia**.
+La transmisión se trata como un **problema de transporte en unidades de tile**, con cuatro responsabilidades separadas:
 
-Analogía de base de datos: cada tile es un registro con clave primaria `(z, x, y)`; la aritmética del quadtree es el índice; las cachés son el *buffer pool* con su política de reemplazo.
+| Responsabilidad | Mecanismo |
+|---|---|
+| **Qué** enviar | Vista (§6) menos lo que el cliente ya tiene según su filtro de Bloom (§13) |
+| **En qué orden** | Plazos según la prioridad visual (EDF, §14) |
+| **A qué ritmo** | Controlador PI sobre la ocupación del búfer de recepción (§12) |
+| **Cómo recuperar** | Paridad XOR (§11) y re-declaración de vista (§15) |
+
+**Analogía de base de datos:** cada tile es un registro con clave primaria `(z, x, y)`; la aritmética del quadtree es el índice; las cachés son el *buffer pool*; y el filtro de Bloom cumple el mismo papel que en Cassandra o Bigtable: evitar trabajo para datos que el otro lado ya tiene.
 
 ---
 
@@ -71,13 +129,18 @@ Analogía de base de datos: cada tile es un registro con clave primaria `(z, x, 
 |---|---|
 | **Tile** | Bloque de hasta `T × T` píxeles (`T = 256`) de un nivel de la pirámide |
 | **Nivel `z`** | Una versión completa de la imagen a cierta resolución. `z = 0` es la menor |
-| **Pirámide** | Conjunto de todos los niveles, cada uno la mitad del siguiente |
 | **Vista (viewport)** | Rectángulo que el cliente muestra, en píxeles del nivel `z` |
-| **Sesión** | Estado que el servidor guarda por conexión: imagen abierta, tiles enviados, `SEQ` vigente, cola |
+| **Sesión** | Estado que el servidor guarda por conexión (§10.2) |
 | **`SEQ`** | Número de secuencia **de vista**, generado por el cliente, estrictamente creciente por conexión |
-| **`TSN`** | (v2) Número de secuencia **de transmisión** de cada tile enviado, generado por el servidor |
-| **Registro de enviados** | Conjunto de claves `(z,x,y)` que el servidor cree que el cliente tiene |
-| **Pedido** | Entrada de la cola de envío: coordenadas de un tile o marca `DONE`. **No contiene bytes** |
+| **`NUM`** | 🆕 Número de secuencia **de envío** de cada mensaje binario, generado por el servidor, creciente por conexión. Como el número de secuencia de RTP: sirve para medir, **no** para confirmar ni retransmitir |
+| **Grupo FEC** | 🆕 Conjunto de 2 a 4 tiles protegidos por una misma paridad |
+| **Paridad** | 🆕 XOR byte a byte de los tiles de un grupo (§11) |
+| **Ocupación `Q`** | 🆕 Tiles enviados por el servidor que el cliente todavía no ha procesado (en la red + en cola de decodificación) |
+| **Tasa `R`** | 🆕 Mensajes binarios por segundo que el servidor puede enviar, fijada por el controlador PI |
+| **Filtro de Bloom** | 🆕 Arreglo de bits que resume qué tiles tiene el cliente (§13) |
+| **Instantánea** | 🆕 Un filtro de Bloom junto con el `NUM` más alto recibido cuando se construyó (`MAX`) |
+| **Plazo** | 🆕 Momento límite en que un tile debería enviarse, según su prioridad visual (§14) |
+| **Pedido** | Entrada de la cola de envío: un tile, una paridad o la marca `DONE`. **Solo coordenadas, no bytes** |
 
 ---
 
@@ -85,9 +148,9 @@ Analogía de base de datos: cada tile es un registro con clave primaria `(z, x, 
 
 ```
 ┌───────────────────────────────┐
-│ PIMG (este documento)         │  Qué tiles necesita cada cliente, orden, cancelación, recuperación
+│ PIMG v2 (este documento)      │  Qué, en qué orden, a qué ritmo y cómo recuperar
 ├───────────────────────────────┤
-│ WebSocket (RFC 6455)          │  Delimitación de mensajes; texto (comandos) vs binario (tiles)
+│ WebSocket (RFC 6455)          │  Delimitación de mensajes; texto (control) vs binario (tiles y paridades)
 ├───────────────────────────────┤
 │ HTTP/1.1 (RFC 9112)           │  Archivos iniciales + handshake de Upgrade
 ├───────────────────────────────┤
@@ -95,96 +158,70 @@ Analogía de base de datos: cada tile es un registro con clave primaria `(z, x, 
 └───────────────────────────────┘
 ```
 
-HTTP y WebSocket están **implementados a mano** sobre `java.net.Socket` (sin librerías).
+HTTP y WebSocket están **implementados a mano** sobre `java.net.Socket`, sin librerías.
 
-| Problema | Capa responsable |
+| Problema | Responsable |
 |---|---|
 | Pérdida, desorden y duplicación de bytes en la red | TCP |
-| Límites entre mensajes | WebSocket |
-| Distinguir comando de tile | WebSocket (opcodes `0x1` / `0x2`) |
-| Detección de conexión muerta | WebSocket PING/PONG, con período definido por PIMG |
-| Identificar qué tile contiene cada mensaje binario | PIMG (cabecera) |
-| Integridad extremo a extremo (disco → pantalla) | PIMG (CRC32) |
-| Cancelar trabajo obsoleto | PIMG (`SEQ`, `CANCEL`) |
-| Estado de resolución por cliente | PIMG (sesión) |
-| Ritmo de envío, control de flujo y congestión, recuperación | PIMG v2 (§17) 📝 |
+| Límites entre mensajes; texto vs binario | WebSocket |
+| Detección de conexión muerta | WebSocket PING/PONG (período definido por PIMG) |
+| Qué tile contiene cada mensaje; integridad disco → pantalla | PIMG: cabecera + CRC32 |
+| Cancelar trabajo de vistas abandonadas | PIMG: `SEQ` |
+| Qué tiene cada cliente | PIMG: filtro de Bloom (§13) |
+| Orden de envío | PIMG: EDF (§14) |
+| Ritmo de envío | PIMG: controlador PI (§12) |
+| Recuperación de tiles perdidos o corruptos | PIMG: FEC (§11) + re-declaración (§15) |
+
+**¿Por qué hay pérdidas si TCP es confiable?** En la aplicación un tile se pierde por **corrupción** entre el disco y la pantalla (detectada por CRC32), por **reconexión** o, en la demostración, por la **red simulada** (§16), que reproduce un enlace con pérdidas. Los mecanismos de v2 están diseñados para un enlace real con pérdidas y se verifican con esa simulación.
 
 ---
 
-## 4. Establecimiento de la conexión ✅
+## 4. Establecimiento de la conexión ✅ (🔁 subprotocolo)
 
-### 4.1 HTTP/1.1 (archivos iniciales)
+### 4.1 HTTP/1.1
 
-- Métodos: solo `GET`. Otro método → `405 Method Not Allowed` con `Allow: GET` y cierre de la conexión.
-- Archivos servidos desde `web/`. Ruta `/` → `/index.html`.
-- Protección contra *path traversal*: la ruta normalizada DEBE quedar dentro de `web/`; si no → `404`.
-- `Content-Type` por extensión: `html`, `css`, `js` (`text/javascript`), `json`, `png`, `jpg`, `ico`.
-- Envío por streaming (`Files.copy`), sin cargar el archivo en memoria.
-- `Connection: keep-alive` por defecto en HTTP/1.1. Conexión inactiva 30 s → se cierra.
-- El parser lee **byte por byte** (sin `BufferedReader`) para no consumir bytes de frames WebSocket que lleguen justo después del handshake.
+- Solo `GET`. Otro método → `405` con `Allow: GET` y cierre.
+- Archivos desde `web/`; `/` → `/index.html`. Protección contra *path traversal* (ruta normalizada dentro de `web/`, si no `404`).
+- `Content-Type` por extensión; envío por streaming; `keep-alive` con 30 s de inactividad.
+- El parser lee **byte por byte** para no consumir bytes de frames WebSocket que lleguen tras el handshake.
 
 ### 4.2 Upgrade a WebSocket
 
-El cliente abre `ws://<mismo host>/ws` proponiendo el subprotocolo **`pimg.v1`**. El servidor valida, en este orden:
+El cliente abre `ws://<mismo host>/ws` con subprotocolo **`pimg.v2`** 🔁. Validaciones en orden:
 
 | Condición | Si falla |
 |---|---|
-| Método `GET`, `Upgrade` contiene `websocket`, `Connection` contiene `upgrade` | `400` |
-| `Sec-WebSocket-Version: 13` | `426 Upgrade Required` con `Sec-WebSocket-Version: 13` |
+| `GET`, `Upgrade` contiene `websocket`, `Connection` contiene `upgrade` | `400` |
+| `Sec-WebSocket-Version: 13` | `426` con `Sec-WebSocket-Version: 13` |
 | `Sec-WebSocket-Key` es Base64 de 16 bytes | `400` |
-| `Sec-WebSocket-Protocol` contiene `pimg.v1` | `400` |
+| `Sec-WebSocket-Protocol` contiene `pimg.v2` | `400` |
 
-Respuesta:
-
-```
-HTTP/1.1 101 Switching Protocols
-Upgrade: websocket
-Connection: Upgrade
-Sec-WebSocket-Accept: Base64(SHA-1(clave + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-Sec-WebSocket-Protocol: pimg.v1
-```
-
-Verificado con el ejemplo de RFC 6455 §1.3: clave `dGhlIHNhbXBsZSBub25jZQ==` → `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`.
-
-Desde el `101`, la misma conexión TCP transporta frames. El primer mensaje del cliente DEBE ser `HELLO`.
+`Sec-WebSocket-Accept = Base64(SHA-1(clave + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))`. Verificado con el ejemplo de RFC 6455 §1.3 (`dGhlIHNhbXBsZSBub25jZQ==` → `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`).
 
 ### 4.3 Frames (RFC 6455 §5)
 
-- Del cliente al servidor: DEBEN venir **enmascarados**; si no → cierre `1002`.
-- Del servidor al cliente: sin máscara y sin fragmentar (`FIN = 1`).
-- Bits RSV activos → `1002`. Opcode desconocido → `1002`.
-- Frames de control: carga ≤ 125 bytes y `FIN = 1`; si no → `1002`.
-- Fragmentación del cliente: se reensambla (opcode `0x0`); límite total 16 KB.
-- Texto que no es UTF-8 válido → `1007`.
-- Mensaje de más de 16 KB → `1009` (se rechaza **antes** de leer la carga).
-- PING → PONG automático con la misma carga.
+- Cliente → servidor **enmascarados** (si no, `1002`). Servidor → cliente sin máscara y sin fragmentar.
+- RSV activos u opcode desconocido → `1002`. Control: ≤ 125 bytes y `FIN = 1`.
+- Fragmentación del cliente reensamblada; límite 16 KB → si se excede, `1009` antes de leer la carga.
+- Texto no UTF-8 → `1007`. PING → PONG automático.
 - Escritura protegida con `ReentrantLock` (no `synchronized`, para no fijar el hilo virtual a su portador en Java 21).
 
 ---
 
 ## 5. Modelo de coordenadas (pirámide) ✅
 
-### 5.1 Niveles
-
-Imagen de `W × H` píxeles y tile `T = 256`.
-
-**Número de niveles `L`:** se divide el lado mayor a la mitad (redondeando hacia arriba) hasta que quepa en un tile. Se usa aritmética entera, no `log₂` en punto flotante (evita errores de redondeo en potencias de 2).
+Imagen de `W × H` y tile `T = 256`.
 
 ```
 L = 1; lado = max(W, H)
-mientras lado > T:  lado = ⌈lado / 2⌉ ; L = L + 1
+mientras lado > T:  lado = ⌈lado / 2⌉ ; L = L + 1          (aritmética entera, sin log₂ flotante)
 ```
 
-Equivale a `L = 1 + ⌈log₂(max(W,H) / T)⌉`.
-
-- `z = 0`: menor resolución; la imagen completa cabe en un tile.
-- `z = L − 1`: resolución original.
-- Con `s = L − 1 − z`: `W_z = ⌈W / 2^s⌉`, `H_z = ⌈H / 2^s⌉`.
-- Tiles del nivel: `C_z = ⌈W_z / T⌉` columnas × `R_z = ⌈H_z / T⌉` filas.
-
-Implementación: `pimg.tiles.PyramidLayout` (servidor) y `anchoNivel/altoNivel` en `web/js/visor.js` (cliente). **Ambas DEBEN dar exactamente los mismos valores.**
-
-### 5.2 Ejemplos reales
+- `z = 0`: imagen completa en un tile. `z = L − 1`: resolución original.
+- Con `s = L − 1 − z`: `W_z = ⌈W / 2^s⌉`, `H_z = ⌈H / 2^s⌉`; columnas `C_z = ⌈W_z / T⌉`, filas `R_z = ⌈H_z / T⌉`.
+- Tile `(z, x, y)` cubre `[x·T, min((x+1)·T, W_z)) × [y·T, min((y+1)·T, H_z))`. Los del borde PUEDEN ser menores que `T`.
+- **Quadtree implícito:** hijos de `(z,x,y)` = `(z+1, 2x+i, 2y+j)`; ancestro `k` niveles arriba = `(z−k, x≫k, y≫k)`. O(1), sin árbol.
+- Texto: `z,x,y`; lista separada por `;`. Clave interna (64 bits): `z≪56 | x≪28 | y`.
 
 | Imagen | W × H | L | Tiles nivel máximo | Tiles totales |
 |---|---|---|---|---|
@@ -192,28 +229,24 @@ Implementación: `pimg.tiles.PyramidLayout` (servidor) y `anchoNivel/altoNivel` 
 | eso1242a PSB | 108 199 × 81 503 | 10 | 423 × 319 = 134 937 | 180 189 |
 | Evaluación 93 GB (PNG) | 176 393 × 176 393 | 11 | 690 × 690 = 476 100 | 635 214 |
 
-### 5.3 Identificación de un tile
-
-- `(z, x, y)`: `x` columna (izquierda → derecha), `y` fila (arriba → abajo), `0 ≤ x < C_z`, `0 ≤ y < R_z`.
-- Cubre los píxeles `[x·T, min((x+1)·T, W_z)) × [y·T, min((y+1)·T, H_z))` del nivel `z`. Los tiles del borde derecho e inferior PUEDEN ser menores que `T`; no se rellenan.
-- **Quadtree implícito:** hijos de `(z,x,y)` = `(z+1, 2x+i, 2y+j)` con `i,j ∈ {0,1}` (los que existan). Ancestro `k` niveles arriba = `(z−k, x >> k, y >> k)`. Todo en O(1), sin árbol explícito.
-- **Texto:** `z,x,y`. Lista: separador `;` → `3,1,2;3,2,2`.
-- **Clave interna del servidor (64 bits):** `z << 56 | x << 28 | y` (x, y < 2²⁸).
+Implementación: `pimg.tiles.PyramidLayout` y `visor.js`. **Ambas DEBEN dar los mismos valores.**
 
 ---
 
 ## 6. Vista (viewport) ✅
 
-El cliente describe su vista en **píxeles del nivel `z`**: esquina superior izquierda `X, Y` (PUEDEN ser negativas) y tamaño `VW, VH`.
+El cliente describe su vista en **píxeles del nivel `z`**: esquina `X, Y` (PUEDEN ser negativas) y tamaño `VW, VH`, con `1 ≤ VW, VH ≤ 4096` y `X, Y ≥ −4096`.
 
-**Tiles visibles** (con división entera hacia −∞, `floorDiv`):
+Tiles visibles (`floorDiv`):
 
-- `x` desde `max(0, ⌊X/T⌋)` hasta `min(C_z − 1, ⌊(X + VW − 1)/T⌋)`
-- `y` desde `max(0, ⌊Y/T⌋)` hasta `min(R_z − 1, ⌊(Y + VH − 1)/T⌋)`
+- `x` de `max(0, ⌊X/T⌋)` a `min(C_z − 1, ⌊(X + VW − 1)/T⌋)`
+- `y` de `max(0, ⌊Y/T⌋)` a `min(R_z − 1, ⌊(Y + VH − 1)/T⌋)`
 
-**Orden:** el servidor DEBE enviar los tiles **del centro hacia afuera**, ordenados por la distancia² entre el centro del tile `((x+0.5)·T, (y+0.5)·T)` y el centro de la vista `(X + VW/2, Y + VH/2)`.
+**Distancia de un tile a la vista** (usada por EDF, §14), en unidades de tile:
 
-**Límites:** `1 ≤ VW, VH ≤ 4096` y `X, Y ≥ −4096`. Impiden que un cliente pida un nivel entero de golpe.
+```
+dist(t) = √[ ((x + 0.5)·T − (X + VW/2))² + ((y + 0.5)·T − (Y + VH/2))² ] / T
+```
 
 Implementación: `pimg.protocol.Vista`.
 
@@ -221,7 +254,7 @@ Implementación: `pimg.protocol.Vista`.
 
 ## 7. Mensajes de control (texto)
 
-Viajan en frames de texto (opcode `0x1`), en UTF-8.
+Frames de texto (opcode `0x1`), UTF-8.
 
 ### 7.1 Sintaxis ✅
 
@@ -233,233 +266,696 @@ CLAVE   = 1*( "A"-"Z" / "_" )
 VALOR   = *( cualquier carácter excepto "|" )
 ```
 
-- El `VALOR` empieza después del **primer** `:`.
-- Una clave NO DEBE repetirse → `400`.
-- El orden de los campos no importa.
-- Máximo 16 KB por mensaje.
-- Identificadores de imagen: `[A-Za-z0-9_-]{1,64}` (también impide rutas como `../`).
-- Números: enteros decimales. Fuera de rango o no numérico → `400`.
-- El servidor reemplaza `|` por `/` en los valores que genera (p. ej. `MSG`).
-
-Implementación: `pimg.protocol.Mensaje`.
+El valor empieza tras el **primer** `:`. Clave repetida → `400`. Orden libre. Máximo 16 KB. Identificadores de imagen `[A-Za-z0-9_-]{1,64}`. Números enteros decimales; fuera de rango → `400`. El servidor reemplaza `|` por `/` en los valores que genera.
 
 ### 7.2 Catálogo
 
 | Comando | Dir. | Campos | Estado requerido | Respuesta | Estado |
 |---|---|---|---|---|---|
-| `HELLO` | C→S | `V` (=1), `CACHE` (1–1 000 000) | `CONNECTED` | `HELLO_OK` o `ERROR` | ✅ |
-| `HELLO_OK` | S→C | `V`, `HB` (s entre heartbeats), `TS` (tamaño de tile) | — | — | ✅ |
+| `HELLO` | C→S | `V` (=2), `CACHE` (1–1 000 000) | `CONNECTED` | `HELLO_OK` o `ERROR` | 🔁 |
+| `HELLO_OK` | S→C | `V`, `HB` (s), `TS` (px), `BM` (bits del filtro), `BK` (hashes), `RPT` (ms entre reportes) | — | — | 🔁 |
 | `LIST` | C→S | — | `READY`, `IMAGE_OPEN` | `LIST_RESP` | ✅ |
 | `LIST_RESP` | S→C | `IMGS` = `id,ESTADO,PROGRESO;…` | — | — | 🟨 solo `READY,100` |
 | `OPEN` | C→S | `IMG` | `READY`, `IMAGE_OPEN` | `META` o `ERROR` | ✅ |
-| `META` | S→C | `IMG`, `W`, `H`, `TS`, `L`, `FMT` | — | — | ✅ |
-| `VIEWPORT` | C→S | `SEQ`, `Z`, `X`, `Y`, `VW`, `VH` | `IMAGE_OPEN` | tiles + `DONE` | ✅ |
-| `GET_TILE` | C→S | `SEQ`, `Z`, `X`, `Y` | `IMAGE_OPEN` | 1 tile o `ERROR` | ✅ |
-| `EVICT` | C→S | `TILES` = `z,x,y;…` (puede ir vacío) | `IMAGE_OPEN` | ninguna | ✅ |
+| `RESUME` | C→S | `IMG`, `SEM`, `BITS` | `READY` | `META` o `ERROR` | 📝 |
+| `META` | S→C | `IMG`, `W`, `H`, `TS`, `L`, `FMT`, `RES` (0 = nueva, 1 = reanudada) | — | — | 🔁 |
+| `VIEWPORT` | C→S | `SEQ`, `Z`, `X`, `Y`, `VW`, `VH` | `IMAGE_OPEN` | tiles, paridades y `DONE` | 🔁 |
+| `BLOOM` | C→S | `MAX`, `SEM`, `BITS` | `IMAGE_OPEN` | ninguna | 📝 |
+| `REPORT` | C→S | `MAX`, `PERD`, `COLA`, `DEC`, `JIT`, `REC` | `IMAGE_OPEN` | `CTRL` | 📝 |
+| `CTRL` | S→C | `R`, `Q`, `E`, `TARDE` | — | — | 📝 |
 | `CANCEL` | C→S | `SEQ` | `IMAGE_OPEN` | ninguna | ✅ |
-| `DONE` | S→C | `SEQ`, `SENT` | — | — | ✅ |
+| `SIM` | C→S | `PERD`, `BW`, `LAT` | `READY`, `IMAGE_OPEN` | `SIM_OK` o `ERROR 403` | 📝 |
+| `SIM_OK` | S→C | `PERD`, `BW`, `LAT` (valores aplicados) | — | — | 📝 |
+| `DONE` | S→C | `SEQ`, `SENT`, `PAR` | — | — | 🔁 |
 | `ERROR` | S→C | `CODE`, `MSG` | — | — | ✅ |
-| `RESUME` | C→S | `IMG`, `SEQ`, `HAVE` = `z,x,y;…` | `READY` | `META` o `ERROR` | 📝 |
-| `ACK`, `FWD` | — | ver §17 | — | — | 📝 |
+| ~~`GET_TILE`~~ | — | **Eliminado en v2** (§0.2) | — | — | ❌ |
+| ~~`EVICT`~~ | — | **Eliminado en v2**, reemplazado por `BLOOM` | — | — | ❌ |
 
-**Rangos numéricos:** `SEQ` ∈ [0, 2³²−1] · `Z` ∈ [0, 255] (y `< L`, si no `416`) · `X, Y` de `VIEWPORT` ∈ [−4096, 2³¹−1] · `X, Y` de `GET_TILE` ∈ [0, 2³¹−1] · `VW, VH` ∈ [1, 4096].
-
-**Estados de imagen en `LIST_RESP`:** `READY`, `PROCESSING` (con `PROGRESO` 0–100) 📝, `FAILED` 📝.
-**Formatos (`FMT`):** `JPEG`, `PNG`.
+**Rangos:** `SEQ`, `MAX`, `PERD`, `REC` ∈ [0, 2³²−1] · `Z` ∈ [0, 255] y `< L` (si no `416`) · `X, Y` ∈ [−4096, 2³¹−1] · `VW, VH` ∈ [1, 4096] · `SEM` ∈ [0, 2³²−1] · `COLA` ∈ [0, 10 000] · `DEC`, `JIT` ∈ [0, 60 000] ms · `PERD` de `SIM` ∈ [0, 50] % · `BW` ∈ [0, 1 000 000] KB/s (0 = sin límite) · `LAT` ∈ [0, 2000] ms. `BITS` DEBE ser Base64 (RFC 4648) de exactamente `BM / 8` bytes; si no, `400`.
 
 ### 7.3 Semántica
 
-**`HELLO`** — Negocia versión. `V ≠ 1` → `ERROR|CODE:426` y cierre `1002`. `CACHE` se valida pero en v1 el servidor no lo usa: confía en `EVICT` para mantener su registro.
+**`HELLO`** — Negocia versión. `V ≠ 2` → `ERROR|CODE:426` y cierre `1002`. `HELLO_OK` informa los parámetros que el cliente DEBE usar: `BM:4096|BK:7|RPT:100`.
 
-**`LIST`** — El servidor relee el catálogo en cada `LIST` (una imagen procesada aparece sin reiniciar). Una imagen está `READY` si existe su `meta.json` (§16).
+**`LIST`** — El servidor relee el catálogo en cada `LIST`. Una imagen está `READY` si existe su `meta.json`.
 
-**`OPEN`** — Abre una imagen. El servidor DEBE: vaciar la cola de la sesión, vaciar el registro de enviados y responder `META`. Imagen inexistente → `404`. El `SEQ` NO se reinicia (sigue siendo creciente por conexión).
+**`OPEN`** — Abre una imagen. El servidor DEBE vaciar la cola, vaciar el filtro del cliente y la lista de enviados recientes (§13.4), y responder `META|…|RES:0`. El cliente DEBE vaciar su caché. `SEQ` y `NUM` **no** se reinician.
+
+**`RESUME`** — Como `OPEN`, pero el cliente conserva su caché y envía su filtro. El servidor inicializa el filtro con `BITS` y `SEM` y responde `META|…|RES:1` (§13.6).
 
 **`VIEWPORT`** — Mensaje principal. El servidor:
-1. Si `SEQ ≤ SEQ vigente` → **ignora el mensaje** (sin respuesta).
+
+1. Si `SEQ ≤ SEQ vigente` → **ignora el mensaje**.
 2. Valida rangos (`Z ≥ L` → `416`).
-3. Calcula los tiles visibles (§6), ordenados del centro hacia afuera.
-4. Actualiza el `SEQ` vigente y **vacía la cola**: esto cancela todo lo pendiente de vistas anteriores, incluido su `DONE`.
-5. Encola los tiles visibles que **no están en el registro de enviados**, hasta `COLA_MAX − 1`; si la vista tiene más, se quedan los del centro.
-6. Encola una marca `DONE`.
+3. Calcula los tiles visibles (§6).
+4. **Filtra** los que el cliente ya tiene según `tiene(t)` (§13.4).
+5. Actualiza el `SEQ` vigente y **vacía la cola**: cancela todo lo pendiente de vistas anteriores, incluidas sus paridades y su `DONE`.
+6. **Asigna plazos** (§14) y arma los **grupos FEC** (§11) con los tiles de mayor prioridad.
+7. Encola tiles y paridades en la cola por plazos, hasta `COLA_MAX − 1`, y una marca `DONE` con plazo infinito.
 
-El emisor envía los tiles y, al llegar a la marca, `DONE|SEQ:n|SENT:k` (`k` = tiles efectivamente enviados). Si llegó un `VIEWPORT` nuevo antes, la marca ya no existe y **no hay `DONE` para la vista vieja**.
+Al llegar a la marca, el emisor envía `DONE|SEQ:n|SENT:k|PAR:p` (`k` tiles y `p` paridades efectivamente enviados). Si llegó una vista nueva antes, la marca ya no existe y **no hay `DONE` para la vista vieja**.
 
-**`GET_TILE`** — Pide un tile puntual (p. ej. tras CRC incorrecto). Se envía **aunque figure como enviado**. Tile inexistente → `416`. Cola llena → se descarta el pedido más antiguo.
+**`BLOOM`** — El cliente envía una instantánea de su caché (§13). El servidor reemplaza el filtro y descarta de la lista de enviados recientes todo lo que tenga `NUM ≤ MAX`.
 
-**`EVICT`** — El cliente liberó esos tiles. El servidor DEBE quitarlos del registro de enviados, para reenviarlos si reaparecen en la vista.
+**`REPORT`** — Reporte de receptor (§12.2). El servidor actualiza el controlador PI y responde `CTRL`.
 
-**`CANCEL`** — El servidor descarta de la cola todos los pedidos con `SEQ ≤` el indicado.
+**`CANCEL`** — Descarta de la cola todos los pedidos con `SEQ ≤` el indicado.
 
-**Registro de enviados** — Un tile se agrega **al enviarse**, no al encolarse. Si se agregara al encolar y luego se cancelara, el servidor creería que el cliente lo tiene y nunca lo enviaría.
+**`SIM`** — Configura la red simulada (§16). Solo se acepta si el servidor se inició con `--sim`; si no, `ERROR|CODE:403`.
 
 ---
 
-## 8. Mensaje de tile (binario) ✅
+## 8. Mensajes binarios
 
-Frames binarios (opcode `0x2`), solo S→C. Enteros **big-endian** y **sin signo**.
+Frames binarios (opcode `0x2`), **solo servidor → cliente**. Enteros **big-endian, sin signo**. El cliente que envía un binario recibe cierre `1003`.
+
+Todo mensaje binario empieza con la misma **cabecera común de 10 bytes**:
+
+| Offset | Tamaño | Campo | Descripción |
+|---|---|---|---|
+| 0 | 1 | `VER` | Versión = **2** |
+| 1 | 1 | `TIPO` | `0x01` = TILE, `0x02` = PARIDAD (otros reservados) |
+| 2 | 4 | `SEQ` | `SEQ` de la vista que originó el envío |
+| 6 | 4 | `NUM` | 🆕 Número de secuencia de envío (§8.3) |
+
+### 8.1 TILE (`TIPO = 0x01`) — 28 bytes + datos 🔁
 
 ```
- 0     1     2           6     7           11          15    16          20          24
- ┌─────┬─────┬───────────┬─────┬───────────┬───────────┬─────┬───────────┬───────────┬──────────
- │ VER │TIPO │ SEQ       │  Z  │ X         │ Y         │ FMT │ LONGITUD  │ CRC32     │ DATOS …
- │ 1 B │ 1 B │ 4 B       │ 1 B │ 4 B       │ 4 B       │ 1 B │ 4 B       │ 4 B       │
- └─────┴─────┴───────────┴─────┴───────────┴───────────┴─────┴───────────┴───────────┴──────────
+ 0     1     2           6           10    11          15          19    20          24          28
+ ┌─────┬─────┬───────────┬───────────┬─────┬───────────┬───────────┬─────┬───────────┬───────────┬──────────
+ │ VER │TIPO │ SEQ       │ NUM       │  Z  │ X         │ Y         │ FMT │ LONGITUD  │ CRC32     │ DATOS …
+ │ 1 B │ 1 B │ 4 B       │ 4 B       │ 1 B │ 4 B       │ 4 B       │ 1 B │ 4 B       │ 4 B       │
+ └─────┴─────┴───────────┴───────────┴─────┴───────────┴───────────┴─────┴───────────┴───────────┴──────────
 ```
 
 | Offset | Tamaño | Campo | Descripción |
 |---|---|---|---|
-| 0 | 1 | `VER` | Versión (= 1) |
-| 1 | 1 | `TIPO` | `0x01` = TILE (otros valores reservados) |
-| 2 | 4 | `SEQ` | `SEQ` del `VIEWPORT`/`GET_TILE` que originó el envío |
-| 6 | 1 | `Z` | Nivel |
-| 7 | 4 | `X` | Columna |
-| 11 | 4 | `Y` | Fila |
-| 15 | 1 | `FMT` | `1` = JPEG, `2` = PNG |
-| 16 | 4 | `LONGITUD` | Bytes de `DATOS` |
-| 20 | 4 | `CRC32` | CRC-32 ISO-HDLC (polinomio `0xEDB88320`, = `java.util.zip.CRC32`) de `DATOS` |
-| 24 | `LONGITUD` | `DATOS` | Imagen codificada del tile |
+| 0–9 | 10 | Cabecera común | `VER = 2`, `TIPO = 0x01`, `SEQ`, `NUM` |
+| 10 | 1 | `Z` | Nivel |
+| 11 | 4 | `X` | Columna |
+| 15 | 4 | `Y` | Fila |
+| 19 | 1 | `FMT` | `1` = JPEG, `2` = PNG |
+| 20 | 4 | `LONGITUD` | Bytes de `DATOS` |
+| 24 | 4 | `CRC32` | CRC-32 ISO-HDLC (polinomio `0xEDB88320` = `java.util.zip.CRC32`) de `DATOS` |
+| 28 | `LONGITUD` | `DATOS` | Imagen codificada del tile |
 
-**Validaciones del receptor** (si alguna falla, el tile se descarta):
-- `24 + LONGITUD` = tamaño del mensaje; `VER`, `TIPO`, `FMT` conocidos.
-- `SEQ ≥ seqInicioImagen` (el `SEQ` siguiente al `OPEN` actual). Uno menor pertenece a una imagen anterior.
-- CRC32 calculado = campo `CRC32`. Si no coincide, además se pide el tile con `GET_TILE`.
+**Cambio respecto a v1:** se insertó `NUM` en los bytes 6–9, así que todo lo demás se corre 4 bytes (cabecera de 24 → 28).
 
-**Justificación del CRC32:** TCP protege los datos solo en la red y con un checksum de 16 bits. El CRC32 cubre el recorrido completo del tile (disco → servidor → red → cliente), siguiendo el argumento *end-to-end* (Saltzer, Reed y Clark, 1984).
+### 8.2 PARIDAD (`TIPO = 0x02`) — 19 + 18·K bytes + datos 📝
 
-Implementación: `pimg.protocol.TileFrame` (servidor), `alBinario` en `web/js/pimg.js` y `web/js/crc32.js` (cliente).
+```
+ Cabecera común (10 B) │ K (1 B) │ K entradas de 18 B │ LONG_P (4 B) │ CRC_P (4 B) │ DATOS_P (LONG_P B)
+```
+
+| Offset | Tamaño | Campo | Descripción |
+|---|---|---|---|
+| 0–9 | 10 | Cabecera común | `VER = 2`, `TIPO = 0x02`, `SEQ`, `NUM` |
+| 10 | 1 | `K` | Número de tiles del grupo, 2 ≤ K ≤ 4 |
+| 11 + 18·i | 1 | `Z_i` | Nivel del tile `i` del grupo |
+| 12 + 18·i | 4 | `X_i` | Columna |
+| 16 + 18·i | 4 | `Y_i` | Fila |
+| 20 + 18·i | 1 | `FMT_i` | Formato |
+| 21 + 18·i | 4 | `LONG_i` | Longitud de los datos del tile `i` |
+| 25 + 18·i | 4 | `CRC_i` | CRC32 de los datos del tile `i` |
+| 11 + 18·K | 4 | `LONG_P` | Longitud de la paridad = `max(LONG_i)` |
+| 15 + 18·K | 4 | `CRC_P` | CRC32 de `DATOS_P` |
+| 19 + 18·K | `LONG_P` | `DATOS_P` | XOR de los datos de los K tiles, cada uno rellenado con ceros hasta `LONG_P` |
+
+Con K = 4 la cabecera mide 91 bytes. Las entradas por tile existen porque la paridad sola no alcanza para reconstruir: el receptor necesita saber **qué** tiles cubre, **cuánto** medía el faltante (para quitar el relleno) y su **CRC** (para verificar que la reconstrucción es correcta).
+
+### 8.3 `NUM`: número de secuencia de envío
+
+- El servidor asigna `NUM = 1, 2, 3…` a cada mensaje binario de la conexión, **en el orden en que salen del emisor**, incluidos los que la red simulada descarta.
+- Como TCP entrega en orden, el cliente los recibe crecientes. Un salto (`NUM` recibido > último + 1) significa que la red simulada descartó mensajes: el cliente suma la diferencia a su contador `PERD`.
+- `NUM` **no** se usa para confirmar ni para pedir retransmisiones: igual que el número de secuencia de RTP (RFC 3550), solo permite **medir** (pérdidas y ocupación, §12) y **fechar** las instantáneas del filtro (§13.4).
+
+### 8.4 Validaciones del receptor
+
+Si alguna falla, el mensaje se descarta (y cuenta como pérdida para FEC):
+- `VER = 2`, `TIPO` y `FMT` conocidos; longitudes coherentes con el tamaño del mensaje.
+- `SEQ ≥ seqInicioImagen` (el `SEQ` siguiente al último `OPEN`/`RESUME`). Uno menor pertenece a una imagen anterior.
+- `CRC32` calculado = campo `CRC32` (TILE) o `CRC_P` (PARIDAD).
+
+**Justificación del CRC32:** TCP protege solo el tramo de red y con un checksum de 16 bits. El CRC32 cubre el recorrido completo disco → servidor → red → cliente (argumento *end-to-end*, Saltzer, Reed y Clark, 1984; Stone y Partridge, 2000). En v2, además, **un tile con CRC incorrecto se trata como perdido** y entra al mismo camino de recuperación.
 
 ---
 
-## 9. Máquina de estados de la sesión ✅
+## 9. Máquina de estados de la sesión ✅ (🔁 `RESUME`)
 
 ```mermaid
 stateDiagram-v2
     [*] --> CONNECTED: 101 Switching Protocols
     CONNECTED --> READY: HELLO válido / HELLO_OK
     CONNECTED --> CLOSED: HELLO con versión no soportada (426 + cierre 1002)
-    READY --> IMAGE_OPEN: OPEN / META
-    IMAGE_OPEN --> IMAGE_OPEN: OPEN (otra imagen) / META
+    READY --> IMAGE_OPEN: OPEN / META RES:0
+    READY --> IMAGE_OPEN: RESUME / META RES:1
+    IMAGE_OPEN --> IMAGE_OPEN: OPEN (otra imagen) / META RES:0
     READY --> CLOSED: CLOSE, timeout o caída
     IMAGE_OPEN --> CLOSED: CLOSE, timeout o caída
     CLOSED --> [*]
 ```
 
-Un comando en un estado no permitido → `ERROR|CODE:412` **sin cerrar** la conexión. Al cerrar, el servidor descarta la sesión completa (cola y registro): no conserva sesiones de conexiones cerradas.
+Comando en estado no permitido → `ERROR|CODE:412` **sin cerrar**. Al cerrar, el servidor descarta toda la sesión: la continuidad entre conexiones la aporta el cliente con `RESUME`.
 
 ---
 
-## 10. Modelo de envío del servidor ✅
+## 10. Arquitectura del envío: cómo encajan los cuatro mecanismos
 
-Cada sesión (`pimg.protocol.SesionPimg`) usa **dos hilos virtuales**:
+### 10.1 Tubería de envío 📝
 
 ```
-Hilo LECTOR (el de la conexión)            Hilo EMISOR (uno por sesión)
-recibe VIEWPORT seq=7                      while (true):
-  ├─ calcula tiles visibles                  espera un pedido (Condition, sin gastar CPU)
-  ├─ omite los ya enviados                   DONE  → envía DONE|SEQ|SENT
-  ├─ VACÍA la cola (cancela seq ≤ 6)  ──►    TILE  → caché/disco → TileFrame → WebSocket
-  └─ encola tiles de seq 7 + marca DONE              → agrega al registro de enviados
+                    ┌──────────────────────────────────────────────────────────────────────────────┐
+ VIEWPORT seq=7 ──► │ [3] FILTRO DE ESTADO   quita los tiles que el cliente ya tiene (Bloom)       │
+                    │ [4] PLANIFICADOR EDF   asigna plazos por prioridad visual y ordena           │
+                    │ [1] FEC                arma grupos entrelazados con los más prioritarios     │
+                    │                         y agrega una PARIDAD por grupo a la cola             │
+                    └──────────────────────────────┬───────────────────────────────────────────────┘
+                                                   ▼ cola por plazos (solo coordenadas)
+                    ┌──────────────────────────────────────────────────────────────────────────────┐
+                    │ EMISOR: toma el pedido de plazo más próximo                                  │
+                    │   TILE    → caché/disco → asigna NUM → mensaje TILE                          │
+                    │   PARIDAD → XOR de los datos de sus miembros → asigna NUM → mensaje PARIDAD  │
+                    │   DONE    → DONE|SEQ|SENT|PAR                                                │
+                    │ [2] REGULADOR PI: espera 1/R segundos entre mensajes binarios                │
+                    └──────────────────────────────┬───────────────────────────────────────────────┘
+                                                   ▼
+                              ENLACE: directo al socket, o red simulada (§16)
+ REPORT  ──► [2] actualiza R          BLOOM ──► [3] actualiza el filtro
 ```
 
-- **Cancelación = vaciar la cola.** La marca `DONE` de la vista vieja se va con ella.
-- **La cola guarda coordenadas, no bytes.** El tile se lee de la caché o del disco al momento de enviarlo.
-- **Límite de cola `COLA_MAX = 300`:** ≥ (4096/256 + 1)² + 1 = 290, para que quepa la vista máxima permitida.
-- Un tile que ya salió al socket no puede cancelarse (queda en el buffer de TCP). En v1 esto se limita solo por TCP; en v2 lo limita la ventana (§17).
-- Hilos: un hilo virtual por conexión (planificación M:N de la JVM, JEP 444) + uno emisor + uno de heartbeat. Sin pool de hilos virtuales (antipatrón según JEP 444).
+Cada mecanismo responde una sola pregunta y no conoce a los demás: el filtro decide **qué**, EDF **cuándo**, FEC **cómo proteger**, PI **qué tan rápido**. `SesionPimg` solo los orquesta.
+
+### 10.2 Estado por sesión en el servidor
+
+| Estado | Contenido | Tamaño típico |
+|---|---|---|
+| Imagen abierta, `SEQ` vigente | Identificador y número | Bytes |
+| Contador `NUM` | Último número asignado | 4 B |
+| Filtro del cliente | 4096 bits + `SEM` + `MAX` | 512 B |
+| Enviados recientes | `(NUM, clave)` enviados después de la última instantánea | Decenas de entradas |
+| Cola por plazos | Pedidos de la vista vigente (≤ 300) | ~10 KB |
+| Controlador PI | `R`, integral, último reporte | Bytes |
+
+### 10.3 Ubicación en el código
+
+```
+src/pimg/
+├── transporte/              📝 lógica pura, sin sockets ni archivos (probable por separado)
+│   ├── FecXor.java           armado de grupos entrelazados y cálculo de la paridad
+│   ├── ControladorPI.java    tasa R a partir de los reportes
+│   ├── FiltroBloom.java      estructura y hashes (idénticos a los de JS, §13.3)
+│   ├── PlanificadorEDF.java  cola por plazos
+│   └── RedSimulada.java      pérdida, ancho de banda y latencia artificiales
+└── protocol/SesionPimg.java  orquesta: usa transporte/, tiles/ y websocket/
+web/js/transporte/            📝 fec.js, bloom.js, reportes.js
+```
+
+Dependencias: `protocol → transporte`; `transporte` no depende de nada del proyecto.
+
+### 10.4 Hilos
+
+Por conexión: un hilo virtual **lector** (atiende los mensajes del cliente), uno **emisor** (cola EDF + pacing PI), uno de **heartbeat** y, solo con red simulada, uno de **enlace**. Hilos virtuales sin pool (JEP 444). La cola se protege con `ReentrantLock` + `Condition`.
 
 ---
 
-## 11. Cachés
+## 11. Mecanismo 1 — FEC con paridad XOR entrelazada 📝
 
-### 11.1 Servidor ✅ (política a reemplazar por ARC 📝)
+### 11.1 Problema
 
-`pimg.tiles.TileCache`: bytes codificados de cada tile, **compartida por todas las sesiones**, límite **128 MB en bytes** (los tiles pesan distinto).
-- Política actual: LRU (`LinkedHashMap` en orden de acceso).
-- La lectura de disco en un fallo se hace **fuera del lock**.
-- Imprime `aciertos` y `fallos` en cada `DONE` (métrica para comparar políticas).
-- **Plan:** ARC (Megiddo y Modha, 2003) — listas T1/T2 con datos, B1/B2 fantasmas, parámetro adaptativo `p`, adaptado a límite en bytes. Motivo: LRU no resiste barridos (un cliente recorriendo el nivel máximo expulsa lo que usan todos). Se mantendrá LRU como opción para comparar tasas de acierto.
+Con retransmisión, recuperar un tile cuesta **al menos una ida y vuelta** (detectar la falta, avisar, esperar el reenvío). Los tiles del centro de la vista son los que el usuario espera ver primero: perderlos lo deja "desatendido". FEC (*Forward Error Correction*) envía redundancia **por adelantado** para reconstruir sin pedir nada.
 
-### 11.2 Cliente ✅ (política a reemplazar por ARC 📝)
+### 11.2 Cómo funciona la paridad XOR
 
-`web/js/cache.js`: `ImageBitmap` decodificados, límite **300 tiles** (~75 MB: 256×256×4 B cada uno).
-- Política actual: LRU (`Map` que reinserta al usar).
-- Al expulsar: `bitmap.close()` (libera memoria de inmediato) y la clave se acumula para `EVICT`.
-- `EVICT` se envía **antes** del siguiente `VIEWPORT`, en lotes de hasta 500 claves.
+El XOR (`⊕`) cumple `a ⊕ a = 0` y `a ⊕ 0 = a`. Si la paridad es `P = A ⊕ B ⊕ C ⊕ D` y se pierde `C`:
+
+```
+P ⊕ A ⊕ B ⊕ D = (A ⊕ B ⊕ C ⊕ D) ⊕ A ⊕ B ⊕ D = C
+```
+
+Los tiles miden distinto, así que cada uno se rellena con ceros hasta `LONG_P = max(LONG_i)` antes del XOR. Al reconstruir, el resultado se recorta a `LONG_i` del faltante y se verifica con `CRC_i`.
+
+### 11.3 Qué se protege y cómo se agrupa (entrelazado)
+
+1. Tras filtrar y ordenar por plazo (§14), se toman los **`N = min(16, nuevos)`** tiles de mayor prioridad: los más cercanos al centro.
+2. Número de grupos: `G = ⌈N / 4⌉`.
+3. El tile de rango `i` (0 = el más prioritario) va al grupo **`i mod G`**.
+4. Grupos con menos de 2 tiles no se protegen (una paridad de un solo tile sería una copia).
+
+Con N = 16 y G = 4:
+
+```
+rango:   0  1  2  3 | 4  5  6  7 | 8  9 10 11 | 12 13 14 15
+grupo:   0  1  2  3 | 0  1  2  3 | 0  1  2  3 |  0  1  2  3
+```
+
+**Por qué entrelazar:** los tiles con rango consecutivo se envían seguidos y además están cerca en la imagen. Una **ráfaga** de pérdidas (varios mensajes seguidos) afecta a lo sumo **un tile por grupo** si dura ≤ G mensajes, y cada grupo puede recuperar uno. Sin entrelazar (grupo 0 = rangos 0–3), una ráfaga de 2 destruiría el grupo completo. Además, los miembros de un grupo quedan a distintas distancias del centro: **separados en la imagen**, como se acordó.
+
+**Ejemplo:** se pierden los rangos 5, 6 y 7 seguidos → grupos 1, 2 y 3 pierden uno cada uno → **los tres se reconstruyen**.
+
+### 11.4 Envío
+
+- Cada `PARIDAD` recibe plazo = `max(plazo de sus miembros) + 1 ms`, así EDF la envía **justo después de su último miembro** (con N = 16: después de los rangos 12, 13, 14 y 15).
+- El emisor calcula el XOR **al momento de enviarla**, leyendo los datos de los miembros desde la caché del servidor (acaban de enviarse, así que están en RAM).
+- Si un miembro no pudo leerse del disco, se excluye de la paridad (`K` se reduce); si quedan menos de 2, la paridad no se envía.
+
+### 11.5 Recuperación en el cliente
+
+El cliente DEBE conservar los datos crudos de al menos los **últimos 32 tiles** recibidos de la vista vigente, hasta procesar las paridades. Al recibir una `PARIDAD`:
+
+```
+faltantes = miembros que no llegaron o llegaron con CRC incorrecto
+si faltantes = 0:   descartar la paridad (no hizo falta)
+si faltantes = 1:   C = DATOS_P ⊕ (datos de los demás miembros, rellenados a LONG_P)
+                    recortar C a LONG_C; si CRC32(C) = CRC_C → entregar como tile normal, REC++
+si faltantes ≥ 2:   no recuperable por FEC → camino de §15
+```
+
+### 11.6 Costo
+
+| Medida | Valor |
+|---|---|
+| Extra sobre los tiles protegidos | 1 paridad por cada 4 tiles ≈ **25 %** (más el relleno si los tamaños difieren) |
+| Extra sobre una vista de ~40 tiles con 16 protegidos | 4 paridades ≈ **10 %** |
+| Pérdidas recuperables | 1 por grupo; ráfagas de hasta G = 4 mensajes |
+| Retardo para recuperar | Hasta que llega la paridad: a lo sumo 4 mensajes después del tile perdido, sin ida y vuelta |
+
+### 11.7 Ventajas, desventajas y mitigación
+
+| Ventajas | Desventajas | Mitigación |
+|---|---|---|
+| Recupera sin esperar una ida y vuelta | Datos extra (~10 % por vista) | Solo se protegen los 16 tiles más prioritarios |
+| No necesita retroalimentación del cliente | XOR recupera solo 1 pérdida por grupo | Grupos pequeños y entrelazados; respaldo de §15 |
+| Resiste ráfagas cortas | Si se pierde la paridad junto con un miembro, ese grupo no se recupera | El respaldo de §15 cubre ese caso |
+| Muy simple de implementar | Sobre TCP en localhost no hay pérdidas: el beneficio solo se ve con corrupción o red simulada | Se demuestra con pérdida simulada (§16); en producción sería útil en enlaces con pérdidas |
+
+**Referencia:** RFC 5109 (*RTP Payload Format for Generic Forward Error Correction*), que define la protección de paquetes RTP con paridad XOR.
 
 ---
 
-## 12. Comportamiento del cliente ✅
+## 12. Mecanismo 2 — Control del ritmo con controlador PI 📝
 
-Archivos: `app.js` (composición), `pimg.js` (protocolo), `visor.js` (cámara y dibujo), `cache.js`, `crc32.js`, `panel.js`.
+### 12.1 Problema
 
-- **Arranque automático:** `HELLO → LIST → OPEN` (primera imagen `READY`) → `META` → `VIEWPORT`.
-- **Cámara continua** en coordenadas de la imagen original: centro `(cx, cy)` y `zoom` (px de pantalla por px original).
-- **Nivel en uso:** `z = clamp(zMax + round(log₂ zoom), 0, zMax)`. Cada nivel se dibuja a una escala entre ~0.71× y 1.41×.
-- **Zoom animado** (suavizado logarítmico por cuadro). Rango actual: desde "imagen completa / 2" hasta 1:1. 📝 Pendiente: permitir > 1:1 con ampliación sin suavizado (`imageSmoothingEnabled = false`) para leer dígitos de 3×5 px.
-- **Refinamiento progresivo:** mientras falta un tile, se dibuja la región correspondiente de su ancestro más cercano en caché (`(z−k, x>>k, y>>k)`), ampliada. El cliente **no pide** tiles extra para esto.
-- **Fundido** de 150 ms al llegar un tile.
-- **Throttling:** máximo un `VIEWPORT` cada 100 ms; no se reenvía una vista idéntica.
-- **Decodificación asíncrona** con `createImageBitmap`. Un contador de **época** (se incrementa con cada `META`) descarta decodificaciones que terminan después de cambiar de imagen.
-- **Aceptación de tiles:** se aceptan **todos** los tiles válidos de la imagen actual (visibles o no) y la LRU decide cuándo expulsarlos, avisando con `EVICT`. *Cambio respecto al borrador v0*: descartar un tile no visible dejaría al servidor creyendo que el cliente lo tiene.
-- **Reconexión:** backoff exponencial 1, 2, 4… máx. 30 s. Tras reconectar: `HELLO`, `LIST`, `OPEN` de la misma imagen, caché vaciada (el servidor empezó un registro nuevo), cámara conservada. 📝 `RESUME` evitaría reenviar lo que el cliente conserva.
-- **Panel de depuración:** conexión, imagen, nivel, zoom, `SEQ`, tiles y MB en memoria, faltantes en pantalla, tiles y bytes recibidos, % respecto a la imagen original sin comprimir, expulsados, descartados / CRC malo, último `DONE`, último error.
+Sin control de ritmo, el servidor escribe en el socket tan rápido como puede. Si el cliente decodifica lento o el enlace es angosto, los tiles se **acumulan** en buffers: el usuario espera más y, cuando cambia de vista, esos tiles ya obsoletos siguen llegando porque ya salieron del servidor. El objetivo es mantener **pocos tiles "en camino"**: los suficientes para no dejar al cliente sin trabajo, y no tantos como para que la cancelación pierda efecto.
+
+### 12.2 Medición: `REPORT` (reporte de receptor)
+
+Cada `RPT = 100 ms` el cliente envía, al estilo de los *receiver reports* de RTCP (RFC 3550 §6.4):
+
+```
+REPORT|MAX:<n>|PERD:<n>|COLA:<n>|DEC:<ms>|JIT:<ms>|REC:<n>
+```
+
+| Campo | Significado | Análogo en RTCP |
+|---|---|---|
+| `MAX` | `NUM` más alto recibido | *extended highest sequence number received* |
+| `PERD` | Mensajes perdidos acumulados (saltos en `NUM`) | *cumulative number of packets lost* |
+| `COLA` | Tiles recibidos que esperan decodificarse | — (propio) |
+| `DEC` | Tiempo promedio de decodificación de un tile (ms) | — (propio) |
+| `JIT` | Variación entre llegadas: `J ← J + (│Δₖ − Δₖ₋₁│ − J) / 16`, con Δ = tiempo entre llegadas consecutivas | *interarrival jitter* (fórmula de §6.4.1 adaptada) |
+| `REC` | Tiles reconstruidos por FEC (acumulado) | — (propio) |
+
+**El reporte no es un ACK:** no confirma tiles concretos, no libera ninguna ventana y nunca provoca una retransmisión. Es una **medición** del estado del receptor, igual que en RTCP.
+
+### 12.3 Variable controlada: ocupación `Q`
+
+```
+Q = (NUM del último mensaje enviado − MAX)  +  COLA
+     └──── en la red / en buffers ────┘      └─ esperando decodificar ─┘
+```
+
+`Q` cuenta los tiles que el servidor ya soltó y el usuario todavía no ve. **Objetivo `Q* = 8 tiles`**: suficiente para que el cliente siempre tenga algo que decodificar, y poco para que una vista abandonada desperdicie a lo sumo ~8 tiles.
+
+### 12.4 Ley de control (discreta, Δt = 0.1 s)
+
+```
+eₖ = Q* − Qₖ                                    error: positivo = hay espacio, negativo = sobra
+Iₖ = Iₖ₋₁ + eₖ · Δt                             término integral (con anti-windup, abajo)
+Rₖ = clamp( R₀ + Kp · eₖ + Ki · Iₖ ,  R_min, R_max )
+```
+
+| Parámetro | Valor inicial | Significado |
+|---|---|---|
+| `R₀` | 40 mensajes/s | Tasa base |
+| `Kp` | 4 (mensajes/s por tile de error) | Ganancia proporcional: reacciona al error actual |
+| `Ki` | 8 (mensajes/s por tile·s) | Ganancia integral: elimina el error que persiste |
+| `R_min`, `R_max` | 4 y 400 mensajes/s | Límites de seguridad |
+| `Q*` | 8 tiles | Punto de operación |
+
+Los valores de `Kp` y `Ki` son **iniciales**; se ajustan con la red simulada midiendo sobrepico y tiempo de establecimiento (§25).
+
+**Por qué cada término:**
+- **P** reacciona rápido: si `Q` sube a 20, `e = −12` y la tasa baja `4 · 12 = 48` mensajes/s de inmediato.
+- **I** corrige el error que P solo no elimina: con solo P, el sistema se estabiliza con un error constante; la integral sigue acumulando hasta que `Q` vuelve exactamente a `Q*`.
+- **Sin D** (derivativo): `Q` se mide cada 100 ms con ruido (ráfagas de llegada); la derivada amplificaría ese ruido.
+
+### 12.5 Anti-windup (saturación del integrador)
+
+Si `R` está en su límite y el error empuja más allá de ese límite, **la integral no se actualiza** (integración condicional):
+
+```
+si (R = R_max y eₖ > 0) o (R = R_min y eₖ < 0):  Iₖ = Iₖ₋₁
+```
+
+Sin esto, durante una saturación larga la integral crecería sin límite y, al desaparecer la causa, la tasa tardaría mucho en volver (sobrepico grande).
+
+**Ejemplo:** `Q = 20`, `I = 0` → `R = 40 + 4·(−12) = −8` → se satura en `R_min = 4`. Como `e < 0` empuja hacia abajo, la integral no acumula. Cuando el cliente se pone al día y `Q = 4`, `e = +4` → `R = 40 + 16 = 56` y la integral empieza a subir la tasa ~3 mensajes/s por reporte mientras `Q` siga bajo el objetivo.
+
+### 12.6 Aplicación de la tasa (pacing)
+
+El emisor deja al menos `1/R` segundos entre mensajes binarios. Los mensajes de texto (`DONE`, `ERROR`, `CTRL`) no se espacian.
+
+**Protección:** si no llega ningún `REPORT` en `3 × RPT = 300 ms`, el servidor fija `R = R_min` hasta recibir el siguiente.
+
+### 12.7 Publicación: `CTRL`
+
+Tras cada `REPORT` el servidor responde `CTRL|R:<tasa>|Q:<ocupación>|E:<error>|TARDE:<%>`, para graficar la respuesta del controlador en el panel. `TARDE` es el porcentaje de mensajes enviados después de su plazo (§14.4).
+
+### 12.8 Ventajas, desventajas y mitigación
+
+| Ventajas | Desventajas | Mitigación |
+|---|---|---|
+| Se adapta a la capacidad real del cliente y del enlace | Hay que sintonizar `Kp` y `Ki`; mal elegidos, la tasa oscila | Sintonía con red simulada; límites `R_min`, `R_max` |
+| Mantiene pocos tiles en camino → la cancelación desperdicia menos | La medición llega con retraso (hasta un RTT + 100 ms) | Ganancias conservadoras |
+| Se analiza como sistema de control: sobrepico, establecimiento, error estacionario | Saturación del integrador | Anti-windup (§12.5) |
+| Una sola variable fácil de explicar (`Q`) | Tráfico de reportes (10 por segundo, ~60 bytes cada uno) | Despreciable frente a un tile (~36 KB) |
+
+**Referencias:** RFC 3550 (RTP/RTCP, reportes de receptor). RFC 8033 (PIE), antecedente de un controlador PI aplicado a colas de red. Åström y Hägglund, teoría de controladores PID.
 
 ---
 
-## 13. Heartbeat y cierre ✅
+## 13. Mecanismo 3 — Sincronización de caché con filtros de Bloom 📝
 
-- El servidor envía **PING** cada `HB = 15 s`; el navegador responde **PONG** automáticamente.
-- Sin **ningún** frame del cliente en `2 × HB = 30 s` (timeout de lectura del socket) → conexión zombie, se cierra.
+### 13.1 Problema
+
+El servidor necesita saber **qué tiene el cliente** para no reenviarlo. En v1 lo resolvía con un registro exacto y el comando `EVICT` (una lista de claves por cada expulsión). Eso tiene tres problemas: las listas crecen con la caché, el registro se pierde al reconectar, y servidor y cliente pueden desincronizarse si se pierde un mensaje.
+
+### 13.2 Qué es un filtro de Bloom
+
+Un arreglo de `m` bits, inicialmente en cero, y `k` funciones hash:
+
+- **Agregar** un tile: calcular sus `k` posiciones y poner esos bits en 1.
+- **Consultar** un tile: si **alguna** de sus `k` posiciones está en 0, el tile **seguro no está**. Si todas están en 1, **probablemente está**.
+
+Puede dar **falsos positivos** (decir "lo tiene" cuando no), nunca falsos negativos. Probabilidad aproximada con `n` elementos:
+
+```
+p ≈ (1 − e^(−k·n/m))^k
+```
+
+### 13.3 Parámetros y hashes (contrato exacto entre Java y JavaScript)
+
+| Parámetro | Valor |
+|---|---|
+| `m` (`BM`) | **4096 bits = 512 bytes** |
+| `k` (`BK`) | **7** |
+| Elementos esperados | ~300 (la caché del cliente) |
+| Falsos positivos con 300 elementos | **≈ 0.17 %** |
+| Bits por elemento | ≈ 13.7 |
+
+**Clave hasheada (13 bytes, big-endian):** `SEM (4 B) ‖ Z (1 B) ‖ X (4 B) ‖ Y (4 B)`.
+
+**Hashes** (doble hashing de Kirsch y Mitzenmacher, 2006: dos hashes generan los `k`):
+
+```
+h1 = FNV-1a de 32 bits sobre los 13 bytes   (base 0x811C9DC5, primo 0x01000193)
+h2 = fmix32(h1) OR 1                         (finalizador de MurmurHash3; el OR 1 lo hace impar)
+posᵢ = ((h1 + i·h2) mod 2³²) mod m,   i = 0 … k−1
+
+fmix32(h): h ^= h >>> 16; h *= 0x85EBCA6B; h ^= h >>> 13; h *= 0xC2B2AE35; h ^= h >>> 16
+```
+
+**Orden de bits:** el bit `j` está en el byte `j >> 3`, con máscara `1 << (j & 7)` (bit menos significativo primero). `BITS` es la codificación Base64 de los 512 bytes (684 caracteres).
+
+**Notas de implementación:** en Java, aritmética `int` con desbordamiento y `Integer.remainderUnsigned(h1 + i*h2, m)`. En JavaScript, `Math.imul(…)` y `>>> 0` en cada paso.
+
+**Vectores de prueba** (calculados en Python y verificados en JavaScript; Java DEBE coincidir):
+
+| `SEM` | Tile `(z,x,y)` | `h1` | `h2` | Posiciones |
+|---|---|---|---|---|
+| 0 | (0, 0, 0) | `da0f62ef` | `c1eeb577` | 751, 2150, 3549, 852, 2251, 3650, 953 |
+| 0 | (3, 2, 1) | `6f0995ef` | `a0e26c1b` | 1519, 522, 3621, 2624, 1627, 630, 3729 |
+| 0 | (10, 689, 689) | `aa361541` | `e7cbfa79` | 1345, 4026, 2611, 1196, 3877, 2462, 1047 |
+| 1 | (0, 0, 0) | `8187a466` | `0d1c23d9` | 1126, 2111, 3096, 4081, 970, 1955, 2940 |
+| 1 | (3, 2, 1) | `ec8d7166` | `cac4047f` | 358, 1509, 2660, 3811, 866, 2017, 3168 |
+| 1 | (10, 689, 689) | `0cc2a54c` | `1a040545` | 1356, 2705, 4054, 1307, 2656, 4005, 1258 |
+
+Filtro con los tres tiles de `SEM = 0`: 21 bits en 1; los primeros 16 dígitos hexadecimales del SHA-256 de los 512 bytes son `d6a5e4617c624c5e`.
+
+### 13.4 Cómo decide el servidor: `tiene(t)`
+
+El filtro describe la caché **en el momento en que el cliente lo construyó**. Los tiles enviados después todavía no aparecen en él. Por eso el servidor combina dos fuentes:
+
+```
+tiene(t) = filtro.contiene(t)  O  t ∈ enviadosRecientes
+```
+
+- **`enviadosRecientes`:** los tiles enviados con `NUM > MAX` de la última instantánea.
+- Al recibir `BLOOM|MAX:n|…`: se reemplaza el filtro y se descartan de `enviadosRecientes` los de `NUM ≤ n`. Esos ya llegaron al cliente antes de construir el filtro: si están en él, el cliente los tiene; si no están, los perdió, falló su CRC o los expulsó, y **deben volver a enviarse** cuando sean visibles.
+
+`MAX` actúa como **marca de tiempo** de la instantánea. Gracias a que TCP entrega en orden, todo lo de `NUM ≤ MAX` ya fue procesado por el cliente al construir el filtro.
+
+### 13.5 Cuándo envía el cliente su filtro
+
+El filtro se construye con los tiles **en caché** más los **recibidos pendientes de decodificar**, con la `SEM` vigente. Se envía:
+1. Antes de un `VIEWPORT`, si la caché cambió (expulsiones) desde el último filtro.
+2. Cada 1 s, si la caché cambió.
+3. Siempre en una re-declaración de vista (§15).
+
+Un filtro estándar **no permite borrar**; por eso el cliente lo **reconstruye completo** cada vez (con ≤ 300 tiles es inmediato).
+
+### 13.6 Reanudación: `RESUME`
+
+Tras una reconexión, el servidor empezó una sesión vacía, pero el cliente conserva su caché. En vez de `OPEN`:
+
+```
+RESUME|IMG:eso1242a|SEM:0|BITS:<base64>
+```
+
+El servidor abre la imagen con ese filtro (`MAX = 0`, porque `NUM` empieza de nuevo en la conexión nueva) y responde `META|…|RES:1`. Lo que el cliente conservaba **no se reenvía**.
+
+### 13.7 Falsos positivos y la semilla `SEM`
+
+Un falso positivo hace que el servidor crea que el cliente tiene un tile que no tiene: ese tile no llegaría. Como los hashes son deterministas, el error se repetiría con el mismo filtro. Por eso los hashes incluyen una **semilla**: si un tile visible sigue faltando tras una re-declaración (§15), el cliente cambia `SEM` (por ejemplo, `SEM + 1`) y reconstruye el filtro. Con otra semilla, las posiciones de todos los tiles cambian y el falso positivo desaparece con probabilidad ≈ 99.8 %.
+
+### 13.8 Comparación con v1
+
+| | v1 (`EVICT` + registro exacto) | v2 (Bloom) |
+|---|---|---|
+| Tamaño para 300 tiles | Lista de ~3 KB por envío | **512 B fijos** (684 caracteres Base64) |
+| Exactitud | Exacto | 0.17 % de falsos positivos, corregibles con `SEM` |
+| Reconexión | Se pierde todo; hay que reenviar | `RESUME` conserva el estado |
+| Si se pierde un mensaje | Desincronización permanente | El siguiente filtro corrige todo (es estado completo, no diferencias) |
+
+### 13.9 Ventajas, desventajas y mitigación
+
+| Ventajas | Desventajas | Mitigación |
+|---|---|---|
+| Compacto y de tamaño fijo | Falsos positivos | Semilla rotativa (§13.7) y re-declaración (§15) |
+| Habilita `RESUME` | No admite borrado | Reconstrucción completa en cada envío |
+| Auto-corrector: cada filtro es estado completo | Java y JS deben coincidir bit a bit | Vectores de prueba compartidos (§13.3) |
+| Refuerza la analogía de base de datos | — | — |
+
+**Referencias:** Bloom (1970); Fan, Cao, Almeida y Broder (2000), *Summary Cache*; Kirsch y Mitzenmacher (2006), doble hashing.
+
+---
+
+## 14. Mecanismo 4 — Planificación por plazos (EDF) 📝
+
+### 14.1 Problema
+
+En v1 la cola se ordenaba una vez por distancia al centro y se enviaba en ese orden (FIFO). En v2 la cola mezcla **trabajos de distinto tipo**: tiles, paridades que deben ir justo después de sus miembros, y tiles que vuelven a enviarse tras una sincronización. Hace falta un criterio único y medible para decidir qué sale primero.
+
+### 14.2 Regla
+
+Cada pedido recibe un **plazo** al encolarse; el emisor **siempre envía el de plazo más próximo** (*Earliest Deadline First*). Con un `VIEWPORT` recibido en el instante `t₀`:
+
+| Pedido | Plazo |
+|---|---|
+| Tile `t` | `t₀ + D₀ + D₁ · dist(t)`, con `D₀ = 30 ms`, `D₁ = 25 ms` por tile de distancia (§6) |
+| Paridad de un grupo | `max(plazo de sus miembros) + 1 ms` |
+| `DONE` | ∞ (siempre al final) |
+| Empates | Orden de inserción |
+
+**Ejemplo:** el tile central (`dist = 0.5`) tiene plazo `t₀ + 42.5 ms`; uno en el borde de una pantalla de 1920 px (`dist ≈ 4`), `t₀ + 130 ms`.
+
+Una vista nueva vacía la cola y recalcula todos los plazos: los plazos siempre se refieren a la **vista vigente**.
+
+### 14.3 Estructura
+
+Cola de prioridad (montículo binario, `PriorityQueue`) ordenada por plazo: insertar y extraer en O(log n), con n ≤ 300.
+
+### 14.4 Métrica: plazos incumplidos
+
+Al enviar cada mensaje, si `ahora > plazo`, se cuenta como **tarde**. El porcentaje se publica en `CTRL|TARDE` (§12.7). Así se mide si la tasa `R` que fija el PI alcanza para la vista: si `TARDE` sube, el cliente o el enlace no dan abasto.
+
+### 14.5 Relación con el orden de v1
+
+Con una sola vista y sin paridades, EDF produce **el mismo orden del centro hacia afuera** que v1, porque el plazo crece con la distancia. Su aporte en v2 es:
+- Intercalar las paridades en el lugar exacto (justo después de su último miembro) sin reglas especiales.
+- Dar una **unidad común** (milisegundos) a todos los trabajos, para mezclar tipos distintos.
+- Hacer **medible** la calidad del servicio (`TARDE`).
+
+### 14.6 Ventajas, desventajas y mitigación
+
+| Ventajas | Desventajas | Mitigación |
+|---|---|---|
+| Prioridad explícita y medible | **Debilidad clásica de EDF:** en sobrecarga incumple muchos plazos en cadena (efecto dominó) | La cola solo contiene la vista vigente (≤ 300 pedidos) y cada vista nueva reinicia los plazos; el PI ajusta la tasa |
+| Integra paridades sin reglas especiales | Los valores `D₀`, `D₁` son arbitrarios | Se eligen para que una vista típica quepa en ~150 ms; se reportan en el documento |
+| Simple: una cola de prioridad | — | — |
+
+**Referencia:** Liu y Layland (1973), *Scheduling Algorithms for Multiprogramming in a Hard-Real-Time Environment*, que demuestra la optimalidad de EDF cuando la carga es factible.
+
+---
+
+## 15. Recuperación de una pérdida: el camino completo 📝
+
+```
+Tile perdido o con CRC incorrecto
+        │
+        ▼
+¿Estaba protegido por FEC y es la única falta de su grupo?
+        │ sí                                  │ no
+        ▼                                     ▼
+Se reconstruye con la paridad       Queda faltante en pantalla (el usuario ve
+(sin ida y vuelta). REC++           el ancestro ampliado, nunca un hueco vacío)
+                                              │
+                                              ▼  al llegar DONE de la vista
+                                    RE-DECLARACIÓN DE VISTA:
+                                    1. BLOOM con el estado real (el tile no está)
+                                    2. VIEWPORT con la misma vista y SEQ nuevo
+                                              │
+                                              ▼
+                                    El servidor recalcula: tiene(t) es falso
+                                    → el tile vuelve a la cola con plazo nuevo
+                                              │
+                                              ▼
+                                    ¿Sigue faltando tras 2 intentos? → cambiar SEM
+                                    (posible falso positivo, §13.7). Máximo 3 intentos;
+                                    luego se espera al próximo movimiento del usuario
+```
+
+**La re-declaración no es un NACK:** el cliente nunca dice "me falta el tile X". Vuelve a declarar su **estado** (qué tiene) y su **vista** (qué ve), y el servidor decide qué enviar con las mismas reglas de siempre. Es el mismo principio de §13: sincronizar estado completo en vez de reportar eventos de pérdida.
+
+Intervalo mínimo entre re-declaraciones: 200 ms.
+
+---
+
+## 16. Red simulada 📝
+
+En localhost no hay pérdidas ni límite de ancho de banda: FEC nunca tendría qué recuperar y el PI siempre estaría en `R_max`. La red simulada reproduce un enlace real **entre el emisor y el socket**:
+
+```
+EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
+                          1. pérdida: descarta el mensaje con probabilidad PERD %
+                          2. latencia: retiene cada mensaje LAT ms
+                          3. ancho de banda: lo libera a BW KB/s
+```
+
+- Se activa iniciando el servidor con `--sim`; se configura desde el panel con `SIM|PERD:5|BW:500|LAT:80`.
+- El enlace es un hilo aparte con una cola acotada (4 MB); si se llena, el emisor espera (contrapresión).
+- **Los mensajes descartados ya tienen `NUM`**: el cliente ve el salto y cuenta la pérdida, como en una red real.
+- Solo afecta servidor → cliente. Los mensajes de texto también pasan por el enlace, para conservar el orden.
+- **Cliente lento** (local, solo en el panel): agrega un retardo artificial a la decodificación para probar el PI sin tocar la red.
+
+| Experimento | Configuración | Qué se debe ver |
+|---|---|---|
+| FEC | `PERD:5` | `REC` sube; pocas re-declaraciones |
+| PI, escalón de ancho de banda | `BW` de 0 a 300 KB/s | `R` baja, `Q` vuelve a 8: sobrepico y tiempo de establecimiento |
+| PI, cliente lento | Decodificación +30 ms | `COLA` sube, `R` baja |
+| EDF | `BW` bajo | `TARDE` sube; el centro llega antes que los bordes |
+| Bloom / `RESUME` | Reiniciar el servidor con la caché llena | Tiles no reenviados tras reconectar |
+
+---
+
+## 17. Cachés
+
+### 17.1 Servidor ✅ (política a reemplazar por ARC 📝)
+
+`pimg.tiles.TileCache`: bytes codificados de cada tile, **compartida por todas las sesiones**, límite **128 MB en bytes**. LRU actual (`LinkedHashMap` en orden de acceso); lectura de disco fuera del lock; imprime aciertos y fallos. Plan: ARC (Megiddo y Modha, 2003), adaptado a límite en bytes, con LRU como opción para comparar. En v2, la caché también sirve los datos que necesita el cálculo de cada paridad.
+
+### 17.2 Cliente ✅ (🔁 sin `EVICT`)
+
+`web/js/cache.js`: `ImageBitmap` decodificados, límite **300 tiles** (~75 MB). LRU actual. Al expulsar: `bitmap.close()` (libera memoria de inmediato) y la caché queda marcada como **modificada**, lo que provoca el envío de un nuevo `BLOOM` (§13.5). El filtro de Bloom es, literalmente, el **resumen de esta caché**.
+
+---
+
+## 18. Comportamiento del cliente
+
+✅ = ya implementado en v1; 📝 = nuevo en v2.
+
+- ✅ **Arranque:** `HELLO → LIST → OPEN` (o `RESUME` 📝 si conserva caché de esa imagen) → `META` → `VIEWPORT`.
+- ✅ **Cámara continua:** centro `(cx, cy)` y `zoom`; nivel `z = clamp(zMax + round(log₂ zoom), 0, zMax)`; zoom animado.
+- 📝 **Zoom > 1:1 sin suavizado** (`imageSmoothingEnabled = false`) para leer dígitos de 3×5 px.
+- ✅ **Refinamiento progresivo:** mientras falta un tile se dibuja su ancestro más cercano en caché, ampliado. Así una pérdida nunca deja un hueco vacío.
+- ✅ **Fundido** de 150 ms; **throttling** de un `VIEWPORT` cada 100 ms; decodificación asíncrona con época.
+- 📝 **Recepción v2:** valida cabecera de 28 bytes y `NUM`; cuenta saltos en `PERD`; conserva los datos de los últimos 32 tiles para FEC; reconstruye con las paridades (§11.5).
+- 📝 **Reportes:** `REPORT` cada 100 ms (§12.2).
+- 📝 **Filtro:** construye y envía `BLOOM` según §13.5.
+- 📝 **Re-declaración de vista** según §15.
+- ✅ **Reconexión:** backoff exponencial 1, 2, 4… máx. 30 s; 📝 conserva la caché y usa `RESUME`.
+- **Panel de depuración:** conexión, imagen, nivel, zoom, `SEQ`, tiles y MB en memoria, faltantes, bytes recibidos, % respecto al original. 📝 Además: gráficas de `R` y `Q` en el tiempo; `PERD`, `REC`, `TARDE`, re-declaraciones; controles de red simulada y cliente lento.
+
+---
+
+## 19. Heartbeat y cierre ✅
+
+PING cada `HB = 15 s`; sin ningún frame del cliente en 30 s → conexión zombie, se cierra. (Los `REPORT` cada 100 ms también mantienen viva la conexión.)
 
 | Código | Uso |
 |---|---|
 | 1000 | Cierre normal |
-| 1002 | Error de protocolo (frame inválido, sin máscara, versión PIMG no soportada) |
+| 1002 | Error de protocolo (frame inválido, sin máscara, versión no soportada) |
 | 1003 | El cliente envió un mensaje binario |
-| 1006 | (solo local) La conexión terminó sin intercambio de CLOSE |
-| 1007 | Texto que no es UTF-8 válido |
+| 1006 | (solo local) Terminó sin intercambio de CLOSE |
+| 1007 | Texto no UTF-8 |
 | 1009 | Mensaje de más de 16 KB |
-| 1011 | Error interno del servidor |
+| 1011 | Error interno |
 
 ---
 
-## 14. Códigos de error PIMG
+## 20. Códigos de error PIMG
 
 | Código | Nombre | Cuándo | ¿Cierra? | Estado |
 |---|---|---|---|---|
-| 400 | `MALFORMED` | Sintaxis inválida, campo faltante o fuera de rango, comando desconocido | No | ✅ |
-| 404 | `IMAGE_NOT_FOUND` | `OPEN` con imagen inexistente o no lista | No | ✅ |
+| 400 | `MALFORMED` | Sintaxis inválida, campo faltante o fuera de rango, `BITS` de tamaño incorrecto, comando desconocido | No | ✅ |
+| 403 | `SIM_DISABLED` | `SIM` sin haber iniciado el servidor con `--sim` | No | 📝 |
+| 404 | `IMAGE_NOT_FOUND` | `OPEN`/`RESUME` con imagen inexistente | No | ✅ |
 | 409 | `IMAGE_NOT_READY` | Imagen en `PROCESSING` o `FAILED` | No | 📝 |
 | 412 | `INVALID_STATE` | Comando no permitido en el estado actual | No | ✅ |
 | 416 | `OUT_OF_RANGE` | `z`, `x` o `y` fuera de la pirámide | No | ✅ |
-| 426 | `VERSION_UNSUPPORTED` | Versión en `HELLO` no soportada | Sí (1002) | ✅ |
+| 426 | `VERSION_UNSUPPORTED` | Versión en `HELLO` distinta de 2 | Sí (1002) | 🔁 |
 | 500 | `INTERNAL` | Error leyendo catálogo o tile | No | ✅ |
 | 503 | `BUSY` | Servidor saturado | No | 📝 |
 
 ---
 
-## 15. Límites y parámetros
+## 21. Límites y parámetros
 
-| Parámetro | Valor | Dónde |
+| Parámetro | Valor | Sección |
 |---|---|---|
-| Tamaño de tile `T` | 256 px | `Main.TAM_TILE`, `IngestMain.T` |
-| Máx. mensaje de texto C→S | 16 KB | `Main.MAX_MENSAJE` |
-| Heartbeat `HB` / timeout | 15 s / 30 s | `Main.HEARTBEAT_SEG` |
-| Timeout HTTP inactivo | 30 s | `HttpServer` |
-| Vista máxima `VW, VH` | 4096 px | `SesionPimg.VISTA_MAX` |
-| Cola de pedidos por sesión | 300 | `SesionPimg.COLA_MAX` |
-| Caché del servidor | 128 MB | `Main.CACHE_BYTES` |
-| Caché del cliente | 300 tiles | `app.js CACHE_MAX` |
-| Throttling de `VIEWPORT` | 100 ms | `app.js THROTTLE_MS` |
-| Fundido de tile | 150 ms | `visor.js FUNDIDO_MS` |
+| Tamaño de tile `T` | 256 px | §5 |
+| Máx. mensaje de texto C→S | 16 KB | §7.1 |
+| Heartbeat / timeout | 15 s / 30 s | §19 |
+| Vista máxima `VW, VH` | 4096 px | §6 |
+| Cola por sesión `COLA_MAX` | 300 (≥ 17² tiles + 4 paridades + `DONE` = 294) | §7.3 |
+| Caché del servidor / del cliente | 128 MB / 300 tiles | §17 |
+| Throttling de `VIEWPORT` | 100 ms | §18 |
+| **FEC:** tiles protegidos / tamaño de grupo / tiles retenidos por el cliente | 16 / 2–4 / 32 | §11 |
+| **PI:** `Q*`, `R₀`, `Kp`, `Ki`, `R_min`, `R_max` | 8, 40, 4, 8, 4, 400 | §12.4 |
+| **PI:** período de reporte / protección sin reportes | 100 ms / 300 ms | §12 |
+| **Bloom:** `m`, `k` | 4096 bits, 7 | §13.3 |
+| **Bloom:** envío periódico si hubo cambios | 1 s | §13.5 |
+| **EDF:** `D₀`, `D₁` | 30 ms, 25 ms/tile | §14.2 |
+| **Re-declaración:** intervalo mínimo / intentos / cambio de semilla | 200 ms / 3 / tras el 2.º | §15 |
+| **Red simulada:** cola del enlace | 4 MB | §16 |
 | Heap del servidor | `-Xmx512m` | `run.bat` |
 
 ---
 
-## 16. Ingesta y almacenamiento
+## 22. Ingesta y almacenamiento
 
-### 16.1 Pirámide en una sola pasada ✅
+### 22.1 Pirámide en una sola pasada ✅
 
 `pimg.ingest.IngestMain` (`ingest.bat <imagen> <id>`):
 
@@ -468,185 +964,162 @@ ImageSource ──franjas de 256 filas──► PyramidBuilder ──tiles──
 (lectura en streaming)                (cascada de niveles)      (hilos de plataforma)   (disco)
 ```
 
-- **`ImageSource`** (interfaz): entrega franjas de filas completas en BGR. Implementación actual: `ImageIOSource` (TIFF/PNG/JPEG del JDK, con lectura por región). La conversión RGB→BGR se hace reordenando bytes a mano (`drawImage` era ~12× más lento).
-- **`PyramidBuilder`:** cada nivel acumula filas hasta completar una franja de `T` filas; la corta en tiles y envía al nivel superior su reducción 2×2 (filtro de caja, promedio redondeado). Los niveles incompletos se vacían al final, de abajo hacia arriba. Todos los niveles salen de píxeles originales (sin recompresión en cascada). **Memoria ≈ 2 franjas del nivel máximo** (1 + ½ + ¼ + …).
-- **`TileEncoderPool`:** pool fijo de hilos de plataforma (uno por núcleo), cola acotada y `CallerRunsPolicy` (**backpressure**: si los compresores se atrasan, el lector comprime y deja de leer). Un `ImageWriter` por hilo; `MemoryCacheImageOutputStream` para evitar archivos temporales.
-- Al terminar se verifica que tiles generados = tiles esperados según `PyramidLayout`.
+- **`ImageSource`** (interfaz): entrega franjas en BGR. `ImageIOSource` (JDK) para TIFF/JPEG; conversión RGB→BGR reordenando bytes (~12× más rápido que `drawImage`).
+- **`PyramidBuilder`:** cada nivel acumula una franja, la corta en tiles y envía al nivel superior su reducción 2×2 (promedio redondeado). Todos los niveles salen de píxeles originales. **Memoria ≈ 2 franjas del nivel máximo.**
+- **`TileEncoderPool`:** pool de hilos de plataforma, cola acotada y `CallerRunsPolicy` (contrapresión).
+- Al terminar se verifica tiles generados = tiles esperados.
 
-### 16.2 Formato en disco ✅ (a reemplazar 📝)
+### 22.2 Formato en disco ✅ (a reemplazar 📝)
 
-```
-data/
-├── input/            imágenes originales (solo lectura)
-└── tiles/{id}/
-    ├── meta.json     {"ancho":…, "alto":…, "tile":256, "niveles":…, "formato":"JPEG"}
-    └── {z}/{x}_{y}.jpg
-```
+`data/tiles/{id}/meta.json` (escrito **al final**: su existencia significa `READY`) y `data/tiles/{id}/{z}/{x}_{y}.jpg` (JPEG 0.85).
+📝 Almacenamiento empaquetado por nivel + índice `(z,x,y) → (offset, longitud)`, necesario para 635 214 tiles.
+📝 Tiles **PNG sin pérdida** en los niveles altos: JPEG destruye dígitos de 3×5 px.
 
-- `meta.json` se escribe **al final**: su existencia significa `READY`.
-- Calidad JPEG 0.85.
-- 📝 **Almacenamiento empaquetado:** un archivo por nivel + índice `(z,x,y) → (offset, longitud)` en RAM. Necesario para cientos de miles de tiles.
-- 📝 **Tiles PNG (sin pérdida)** en los niveles altos de las imágenes de evaluación: JPEG destruye dígitos de 3×5 px.
-
-### 16.3 Formatos de entrada
+### 22.3 Formatos de entrada
 
 | Imagen | Formato | Lector |
 |---|---|---|
 | eso1242a TIFF 40K (3.9 GB) | TIFF RGB 8 bits | `ImageIOSource` ✅ |
-| eso1242a (24.6 GB) | PSB (Photoshop Large Document) | `PsbSource` propio 📝 (JDK no lo soporta) |
-| Evaluación 93 GB | **PNG RGB 8 bits, sin entrelazar, bloques deflate *stored* (sin compresión)**, 176 393 × 176 393 | `PngSource` propio 📝 |
-| Evaluación 17 / 28 / 55 GB | Presumiblemente igual (mismo generador) — por confirmar | `PngSource` 📝 |
+| eso1242a (24.6 GB) | PSB | `PsbSource` propio 📝 |
+| Evaluación 93 GB | PNG RGB 8 bits, sin entrelazar, bloques *stored* (sin compresión), 176 393 × 176 393 | `PngSource` propio 📝 |
+| Evaluación 17 / 28 / 55 GB | Presumiblemente iguales — por confirmar | `PngSource` 📝 |
 
-**Por qué un `PngSource` propio:** PNG guarda los píxeles como un único flujo comprimido; el lector del JDK vuelve a descomprimir desde el inicio en cada lectura por región (costo cuadrático). El lector propio lee el archivo **una sola vez**: recorre chunks `IDAT`, descomprime con `java.util.zip.Inflater`, deshace los filtros de fila (None, Sub, Up, Average, Paeth; solo requieren la fila anterior) y entrega franjas en orden, que es exactamente lo que consume `PyramidBuilder`. Con bloques *stored*, la velocidad queda limitada por el disco. Una fila de la imagen de 93 GB ocupa 529 180 bytes; una franja, ~135 MB.
-
----
-
-## 17. Transporte PIMG v2 (control y recuperación) 📝
-
-> **Diseño aprobado, no implementado. Los formatos de esta sección pueden cambiar.**
-> Es la parte que responde al 60 % "protocolo" de la evaluación.
-
-### 17.1 Motivación
-
-Sobre TCP no se pierden bytes. En la aplicación, los tiles fallan por **corrupción** (disco → pantalla), **cancelación**, **reconexión** o **saturación del cliente**. Además, sin límite de envío, los tiles de una vista abandonada quedan atrapados en el buffer de TCP. v2 adapta los mecanismos de TCP **en unidades de tile**, con una diferencia de fondo: **no todo debe llegar, solo lo que sigue siendo relevante**.
-
-### 17.2 Número de transmisión (`TSN`)
-
-- Cada tile enviado lleva un `TSN` (uint32) creciente por conexión, asignado por el servidor. Una retransmisión recibe un `TSN` nuevo.
-- Cabecera binaria v2 (`VER = 2`): se agrega `TSN` (4 B) después de `SEQ` → cabecera de 28 bytes.
-
-### 17.3 Confirmaciones: ACK acumulativo + SACK (RFC 2018)
-
-```
-ACK|CUM:<tsn>|SACK:<a>-<b>,<c>-<d>|WND:<n>
-```
-
-- `CUM`: todos los `TSN ≤ CUM` fueron recibidos o abandonados.
-- `SACK`: rangos recibidos por encima de `CUM` (huecos = lo que falta).
-- `WND`: ventana del receptor (§17.5).
-- El cliente envía `ACK` cada `N` tiles recibidos o cada 50 ms (lo que ocurra primero).
-
-### 17.4 Ventana deslizante
-
-```
-TSN:   ... 118 119 | 120 121 122 123 124 125 | 126 127 128 ...
-       confirmados |  en vuelo (≤ ventana)   | por enviar
-```
-
-El servidor mantiene `en_vuelo ≤ min(cwnd, WND)`.
-
-### 17.5 Control de flujo
-
-`WND` = cuántos tiles más puede aceptar el cliente = capacidad libre de su cola de decodificación y de su caché. Un cliente lento reduce `WND` y el servidor frena sin llenar el buffer de TCP (inspirado en el control de flujo de HTTP/2, RFC 9113 §5.2, y QUIC, RFC 9000 §4).
-
-### 17.6 Control de congestión (RFC 5681 adaptado a tiles)
-
-- `cwnd` inicial = 4 tiles; `ssthresh` inicial = 64.
-- **Slow Start:** `cwnd += 1` por tile confirmado (se duplica por RTT) mientras `cwnd < ssthresh`.
-- **Congestion Avoidance:** `cwnd += 1/cwnd` por tile confirmado.
-- **Pérdida por SACK** (≥ 3 `TSN` confirmados por encima de un hueco): retransmisión rápida del tile si es relevante; `ssthresh = cwnd = max(cwnd/2, 2)`.
-- **Pérdida por timeout:** `ssthresh = max(cwnd/2, 2)`, `cwnd = 1`.
-
-### 17.7 Temporizador de retransmisión (RFC 6298)
-
-- `SRTT`, `RTTVAR` con α = 1/8, β = 1/4; `RTO = SRTT + max(G, 4·RTTVAR)`.
-- Mínimo de 200 ms (desviación documentada del mínimo de 1 s del RFC, justificada por redes locales).
-- **Algoritmo de Karn:** no se toman muestras de RTT de tiles retransmitidos.
-
-### 17.8 Recuperación parcial por relevancia (adaptado de PR-SCTP, RFC 3758)
-
-Un tile perdido (hueco en SACK o RTO vencido) o corrupto (CRC32) **solo se retransmite si sigue siendo relevante**: pertenece a la vista vigente o tiene un `GET_TILE` pendiente. Si no, se **abandona** y el servidor avisa:
-
-```
-FWD|TSN:<n>
-```
-
-El cliente trata todo `TSN ≤ n` como resuelto y avanza su `CUM` (equivalente al FORWARD-TSN de PR-SCTP). Así, un hueco que ya no importa no bloquea la ventana.
-
-**Diferencia con Selective Repeat clásico:** Selective Repeat garantiza la entrega de **todo**; PIMG garantiza la entrega de **lo que el usuario está viendo**.
-
-### 17.9 Modo de red simulada
-
-En localhost no hay pérdidas ni congestión, así que los mecanismos no se podrían observar. El servidor tendrá parámetros de simulación: **% de pérdida** (el tile recibe `TSN` pero no se escribe), **latencia** y **ancho de banda** (cubeta de tokens). El panel del cliente graficará `cwnd`, RTT y `en_vuelo` en el tiempo.
+**Por qué `PngSource` propio:** el lector del JDK vuelve a descomprimir desde el inicio en cada lectura por región (costo cuadrático). El propio lee el archivo una vez: chunks `IDAT`, `java.util.zip.Inflater`, filtros de fila (None, Sub, Up, Average, Paeth). Una fila de la imagen de 93 GB ocupa 529 180 bytes; una franja, ~135 MB. El formato se detecta por la **firma** del archivo, no por la extensión; los no soportados se rechazan con estado `FAILED`.
 
 ---
 
-## 18. Decisiones de diseño
+## 23. Decisiones de diseño
 
 | Decisión | Por qué |
 |---|---|
-| HTTP y WebSocket implementados a mano | Requisito del curso; control total del framing y del ciclo de vida |
-| WebSocket y no HTTP por tile | Conexión persistente, el servidor empuja datos, un solo "request" visible en DevTools |
-| Un hilo virtual por conexión, sin pool | Los hilos virtuales son baratos; un pool fijo reintroduce el límite de clientes (JEP 444) |
-| Pool de hilos de plataforma para comprimir tiles | Es trabajo de CPU: los hilos virtuales no lo aceleran |
+| HTTP y WebSocket implementados a mano | Requisito del curso; control total del framing |
+| WebSocket y no HTTP por tile | Conexión persistente con estado; el servidor empuja datos |
+| Un hilo virtual por conexión, sin pool | Son baratos; un pool fijo reintroduce el límite de clientes (JEP 444) |
+| Pool de hilos de plataforma para comprimir | Trabajo de CPU: los hilos virtuales no lo aceleran |
 | `ReentrantLock` en lugar de `synchronized` | Evita fijar el hilo virtual a su portador en Java 21 |
-| Tiles binarios, no Base64 | Base64 agrega ~33 % de tamaño |
-| Cola de pedidos con coordenadas | Cancelar es vaciar la cola; la cola no consume memoria significativa |
-| Marcar "enviado" al enviar | Evita tiles fantasma tras una cancelación |
-| Pirámide en una sola pasada | Una lectura del disco, sin recompresión en cascada, memoria acotada por el ancho |
-| Formato interno BGR en `byte[]` | Reducción 2×2 propia y explícita; es el formato nativo de `TYPE_3BYTE_BGR` |
-| `meta.json` al final de la ingesta | Una pirámide incompleta nunca aparece como `READY` |
-| Lectores propios (PSB, PNG) | El JDK no lee PSB y lee PNG por región con costo cuadrático |
-| Cliente acepta todos los tiles válidos | Mantiene consistente el registro de enviados del servidor |
-| Zoom continuo con cambio de nivel por umbral | Transición suave; el detalle siempre viene de tiles del nivel correcto |
+| Tiles binarios, no Base64 | Base64 agrega ~33 % |
+| Cola con coordenadas, no bytes | Cancelar es vaciar la cola; no consume memoria significativa |
+| Pirámide en una sola pasada | Una lectura del disco, memoria acotada por el ancho |
+| **v2:** cuatro mecanismos con una responsabilidad cada uno | Se explican, prueban y miden por separado (§10) |
+| **v2:** FEC en lugar de retransmisión | Recupera sin ida y vuelta; no duplica la confiabilidad de TCP |
+| **v2:** solo se protegen los 16 tiles más prioritarios | Costo acotado (~10 % por vista) donde más importa |
+| **v2:** controlar la ocupación `Q` y no la latencia | `Q` combina red y cliente en una sola variable medible; acota el desperdicio al cancelar |
+| **v2:** PI y no PID | El derivativo amplificaría el ruido de la medición cada 100 ms |
+| **v2:** Bloom con estado completo y no diferencias | Se auto-corrige ante cualquier mensaje perdido; permite `RESUME` |
+| **v2:** semilla en los hashes | Convierte un falso positivo permanente en uno transitorio |
+| **v2:** `NUM` como el número de secuencia de RTP | Mide pérdidas y ocupación y fecha el filtro, sin confirmaciones |
+| **v2:** re-declaración de vista en vez de pedir tiles | El servidor siempre decide con estado completo; sin NACK |
+| **v2:** red simulada dentro del servidor | Única forma de observar FEC y PI en localhost |
 
 ---
 
-## 19. Resultados medidos
+## 24. Preguntas previsibles en la defensa
+
+**¿Para qué FEC si TCP no pierde datos?**
+TCP no pierde bytes en la red, pero un tile puede llegar corrupto (lo detecta el CRC32) o perderse en un enlace real con pérdidas, que es el escenario para el que se diseña el protocolo. Lo demostramos con la red simulada. Además, FEC recupera **sin** la ida y vuelta que exigiría pedir el tile de nuevo.
+
+**¿El `REPORT` no es un ACK disfrazado?**
+No. Un ACK confirma datos concretos y su ausencia provoca una retransmisión o detiene una ventana. El `REPORT` es una medición del receptor (como RTCP): el servidor solo lo usa para calcular `Q` y ajustar la tasa. Nunca retransmite por él.
+
+**¿La re-declaración de vista no es un NACK?**
+Un NACK identifica qué paquetes faltan. El cliente nunca hace eso: vuelve a enviar su estado completo (filtro) y su vista, y el servidor decide con las mismas reglas de cualquier `VIEWPORT`.
+
+**¿EDF no da el mismo orden que v1?**
+Para una vista sola, sí, por diseño. Lo que aporta es una unidad común para mezclar tiles, paridades y reenvíos, y una métrica de calidad de servicio (plazos incumplidos).
+
+**¿Qué pasa con un falso positivo del filtro?**
+El tile no llegaría. El cliente lo nota como faltante, re-declara la vista y, si persiste, cambia la semilla de los hashes: con otra semilla las posiciones de los bits cambian por completo.
+
+**¿Cómo eligieron `Kp` y `Ki`?**
+Valores iniciales razonables, ajustados experimentalmente con un escalón de ancho de banda en la red simulada, midiendo sobrepico y tiempo de establecimiento (§25).
+
+**¿En qué se diferencia de TCP?**
+TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** con prioridad visual, cancela lo que dejó de importar y sincroniza **estado** en lugar de confirmar paquetes.
+
+---
+
+## 25. Resultados medidos y experimentos pendientes
+
+### 25.1 Medidos en v1
 
 | Medición | Resultado |
 |---|---|
-| Ingesta TIFF 40K, solo lectura (lector JDK) | 93 s, 43 MB/s |
+| Ingesta TIFF 40K, solo lectura | 93 s, 43 MB/s |
 | Ingesta TIFF 40K, pirámide completa (9 niveles, 12 hilos) | **93.5 s**, igual que solo leer; 24 796 / 24 796 tiles |
 | Memoria máxima de la ingesta | 263 MB (límite 512 MB) |
-| Disco de la pirámide (JPEG q 0.85) | 871 MB (22 % del original), 36 KB/tile |
+| Disco de la pirámide (JPEG 0.85) | 871 MB (22 % del original), 36 KB/tile |
 | Conversión de color `drawImage` vs reordenar bytes | 12 s → 0.08 s por franja |
 | Cancelación: vista abandonada de 256 tiles | **1 tile** llegó (0.4 % desperdiciado), sin `DONE` para esa vista |
-| Vista repetida | `SENT:0` (el servidor recuerda lo enviado) |
+| Vista repetida | `SENT:0` |
 | Handshake WebSocket vs ejemplo RFC 6455 | Idéntico |
+| Imagen de 93 GB (`PngInfo`) | 176 393 × 176 393, RGB 8 bits, sin entrelazar, bloques *stored* |
 
----
+### 25.2 Experimentos de v2 (por realizar)
 
-## 20. Pendientes
-
-| Prioridad | Tarea |
+| Experimento | Métrica |
 |---|---|
-| Alta | `PngSource` (lector propio en streaming) y prueba con la imagen de 93 GB |
-| Alta | Tiles PNG en niveles altos + zoom > 1:1 sin suavizado (legibilidad de dígitos) |
-| Alta | Almacenamiento empaquetado por nivel + índice; ingesta reanudable |
-| Alta | Transporte v2 (§17) + modo de red simulada + gráficas en el panel |
-| Media | ARC en servidor y cliente, con LRU como opción para comparar |
-| Media | Ingesta automática (`WatchService` sobre `data/input/`, `PROCESSING` con %) |
-| Media | Coordenadas bajo el cursor e "ir a x, y" |
-| Media | `RESUME`; `PsbSource` para la imagen de 24.6 GB |
-| Final | Pruebas con JDK 21 sin internet, varios clientes, sesión larga; documento final |
+| FEC con 1 %, 5 % y 10 % de pérdida | % de pérdidas recuperadas por FEC; re-declaraciones necesarias; bytes extra |
+| PI con escalón de ancho de banda | Sobrepico de `Q`, tiempo de establecimiento, error estacionario |
+| PI sin control (tasa fija) vs con PI | Tiles desperdiciados al cancelar una vista |
+| Bloom | Bytes de sincronización vs v1 (`EVICT`); falsos positivos observados; tiles no reenviados con `RESUME` |
+| EDF | % de plazos incumplidos según el ancho de banda |
+| Global | Bytes recibidos vs tamaño de la imagen al navegar 5 min en la imagen de 93 GB |
 
 ---
 
-## 21. Referencias
+## 26. Estado de implementación
 
+| Prioridad | Tarea | Estado |
+|---|---|---|
+| Alta | `PngSource` y prueba con la imagen de 93 GB | 📝 |
+| Alta | Almacenamiento empaquetado + ingesta reanudable | 📝 |
+| Alta | Tiles PNG en niveles altos + zoom > 1:1 sin suavizado | 📝 |
+| Alta | Cabecera v2 (`NUM`) + EDF | 📝 |
+| Alta | Red simulada + controles en el panel | 📝 |
+| Alta | FEC (servidor y cliente) | 📝 |
+| Alta | `REPORT` + controlador PI + `CTRL` + gráficas | 📝 |
+| Alta | Bloom + `RESUME` + re-declaración (retira `EVICT` y `GET_TILE`) | 📝 |
+| Media | ARC en servidor (LRU como opción) | 📝 |
+| Media | Ingesta automática (`WatchService`, `PROCESSING` con %) | 📝 |
+| Media | Coordenadas bajo el cursor e "ir a x, y" | 📝 |
+| Final | Pruebas con JDK 21 sin internet, varios clientes; documento final | 📝 |
+
+---
+
+## 27. Referencias
+
+**Protocolos base**
 - RFC 2119 — *Key words for use in RFCs to Indicate Requirement Levels*.
 - RFC 9110 — *HTTP Semantics*. RFC 9112 — *HTTP/1.1*.
 - RFC 6455 — *The WebSocket Protocol*.
 - RFC 9293 — *Transmission Control Protocol (TCP)*.
-- RFC 2018 — *TCP Selective Acknowledgment Options*.
-- RFC 5681 — *TCP Congestion Control*.
-- RFC 6298 — *Computing TCP's Retransmission Timer*.
-- RFC 3758 — *SCTP Partial Reliability Extension*.
-- RFC 9113 — *HTTP/2* (§5.2, control de flujo). RFC 9000 — *QUIC* (§4, control de flujo).
 - RFC 3174 — *US Secure Hash Algorithm 1 (SHA1)*. RFC 4648 — *Base16, Base32 and Base64 Encodings*.
-- RFC 2083 / W3C PNG Specification — formato PNG (chunks, filtros, zlib).
+- RFC 2083 / W3C PNG Specification.
 - JEP 444 — *Virtual Threads*.
+
+**Mecanismos de v2**
+- RFC 5109 — *RTP Payload Format for Generic Forward Error Correction* (paridad XOR).
+- RFC 3550 — *RTP: A Transport Protocol for Real-Time Applications* (números de secuencia, reportes de receptor, jitter).
+- RFC 8033 — *Proportional Integral Controller Enhanced (PIE)* (antecedente de control PI en redes).
+- Åström, K. J., Hägglund, T. (2006). *Advanced PID Control*. ISA.
+- Bloom, B. H. (1970). *Space/Time Trade-offs in Hash Coding with Allowable Errors*. Communications of the ACM.
+- Fan, L., Cao, P., Almeida, J., Broder, A. (2000). *Summary Cache: A Scalable Wide-Area Web Cache Sharing Protocol*. IEEE/ACM Transactions on Networking.
+- Kirsch, A., Mitzenmacher, M. (2006). *Less Hashing, Same Performance: Building a Better Bloom Filter*. ESA.
+- Fowler, Noll, Vo — función hash FNV-1a. Appleby, A. — MurmurHash3 (finalizador `fmix32`).
+- Liu, C. L., Layland, J. W. (1973). *Scheduling Algorithms for Multiprogramming in a Hard-Real-Time Environment*. Journal of the ACM.
+
+**Integridad, cachés y antecedentes**
 - Saltzer, J., Reed, D., Clark, D. (1984). *End-to-End Arguments in System Design*. ACM TOCS.
 - Stone, J., Partridge, C. (2000). *When the CRC and TCP Checksum Disagree*. ACM SIGCOMM.
 - Megiddo, N., Modha, D. (2003). *ARC: A Self-Tuning, Low Overhead Replacement Cache*. USENIX FAST.
-- OSGeo *Tile Map Service Specification*; IIIF *Image API*; Microsoft *Deep Zoom* (antecedentes de pirámides de tiles).
+- OSGeo *Tile Map Service*; IIIF *Image API*; Microsoft *Deep Zoom*.
 
 ---
 
-## 22. Historial
+## 28. Historial
 
 | Versión doc. | Cambios |
 |---|---|
 | v0 | Borrador inicial: pila, coordenadas, comandos, cabecera binaria, estados, errores |
-| v1.0 | Refleja la implementación funcional: HTTP/WebSocket propios, sesión con cola cancelable, cachés, cliente con zoom continuo, ingesta en cascada. Cola 64 → 300 y vista máxima 4096. Regla de aceptación de tiles del cliente. Código de cierre 1007. Formatos de entrada reales (PNG 93 GB *stored*). Diseño del transporte v2 (§17) |
+| v1.0 | Implementación funcional de `pimg.v1`: HTTP/WebSocket propios, sesión con cola cancelable, cachés LRU, cliente con zoom continuo, ingesta en cascada. Diseño preliminar de transporte con ACK/SACK, ventana y Slow Start |
+| **v2.0** | **Protocolo `pimg.v2`.** Se reemplaza el diseño de transporte preliminar por los cuatro mecanismos aprobados: FEC con paridad XOR entrelazada, controlador PI sobre la ocupación del búfer de recepción, sincronización de caché con filtros de Bloom y planificación EDF. Se agregan `NUM` (cabecera de 28 bytes), `PARIDAD`, `REPORT`, `CTRL`, `BLOOM`, `RESUME` con filtro, `SIM`, red simulada y re-declaración de vista. Se eliminan `GET_TILE` y `EVICT`. Vectores de prueba de los hashes del filtro. Sección de preguntas para la defensa |
