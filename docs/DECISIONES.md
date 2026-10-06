@@ -62,8 +62,11 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 - **Decisión:** PNG (lector propio), TIFF/JPEG/BMP (`ImageIO`), PSB opcional; lo demás se rechaza con `FAILED`.
 - **Por qué:** soportar "cualquier formato" no es realista; la interfaz `ImageSource` es el punto de extensión.
 
-### D-14 · Tiles PNG sin pérdida en los niveles altos · 2026-09-23 · Propuesta
-- **Por qué:** JPEG difumina dígitos de 3×5 px, que deben leerse en la máxima definición.
+### D-14 · Tiles en PNG sin pérdida · 2026-10-04 · Vigente
+- **Contexto:** JPEG se eligió para la foto eso1242a. Las imágenes de evaluación son texto de colores planos con dígitos de 3×5 px.
+- **Por qué:** JPEG difumina los bordes y genera artefactos alrededor del texto; PNG conserva cada píxel y comprime muy bien los colores planos.
+- **Aclaración:** los tiles se codifican sí o sí (el PNG de origen es un solo flujo comprimido de filas completas, no se puede recortar). La elección es solo el formato de cada tile.
+- **Medido (imagen de 4 GB):** PNG 836 MB y 117 s contra JPEG 1179 MB y 109 s. 29 % menos disco, sin pérdida; el tiempo lo sigue dominando la lectura del disco (90 s).
 
 ---
 
@@ -134,3 +137,17 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 - **Contexto:** la memoria de la ingesta crece con el ancho de la imagen (franjas de 256 filas a todo lo ancho).
 - **Medido:** 250 MB con la imagen de 4 GB (36 743 px). La de 93 GB mide 176 393 px de ancho y quedaría cerca de 512 MB.
 - **Decisión:** `ingest.bat` usa 1 GB para tener margen. El servidor sigue con 512 MB.
+
+### D-33 · Almacenamiento empaquetado por nivel con índice denso · 2026-10-04 · Vigente
+- **Contexto:** la imagen de 93 GB genera 635 214 tiles; como archivos sueltos son muy lentos de crear, copiar y borrar en disco duro (el costo es por archivo, no por byte).
+- **Decisión:** por nivel, un `{z}.pack` con los tiles concatenados y un `{z}.idx` con una entrada de 12 bytes (offset + longitud) por tile, en orden fila por fila.
+- **Descartado:** un solo archivo para toda la pirámide (los niveles se escriben en paralelo durante la cascada); un índice con búsqueda (la entrada de tamaño fijo se calcula en O(1)).
+- **Analogía:** el `.pack` es la tabla y el `.idx` un índice denso sobre la clave `(z, x, y)`.
+- **Medido (imagen de 4 GB):** 19 archivos en lugar de 27 660; ingesta de 117 s a 33.6 s, porque el disco escribe en secuencia en vez de crear miles de archivos mientras lee el PNG.
+
+### D-34 · Ingesta reanudable descartada · 2026-10-05 · Vigente
+- **Por qué:** el PNG se lee en secuencia desde el byte 0 igual, así que reanudar solo ahorraría codificar y escribir; reconstruir el estado de la cascada es complejo. La ingesta de 4 GB tarda 34 s; si se corta, se borra con `clean.bat tiles <id>` y se repite. `meta.json` al final garantiza que una pirámide incompleta nunca aparezca como lista.
+
+### D-35 · Un `TileStore` por imagen, con el índice cargado en RAM al primer uso · 2026-10-05 · Vigente
+- **Por qué:** todas las sesiones comparten el mismo índice (7.6 MB para la imagen de 93 GB); la lectura posicional permite leer en paralelo sin lock.
+- **Limitación conocida:** reingestar una imagen con el mismo id mientras el servidor corre deja al servidor con el índice viejo. Hasta la Fase 9, hay que reiniciar el servidor.

@@ -969,11 +969,30 @@ ImageSource ──franjas de 256 filas──► PyramidBuilder ──tiles──
 - **`TileEncoderPool`:** pool de hilos de plataforma, cola acotada y `CallerRunsPolicy` (contrapresión).
 - Al terminar se verifica tiles generados = tiles esperados.
 
-### 22.2 Formato en disco ✅ (a reemplazar 📝)
+### 22.2 Formato en disco (empaquetado) ✅
 
-`data/tiles/{id}/meta.json` (escrito **al final**: su existencia significa `READY`) y `data/tiles/{id}/{z}/{x}_{y}.jpg` (JPEG 0.85).
-📝 Almacenamiento empaquetado por nivel + índice `(z,x,y) → (offset, longitud)`, necesario para 635 214 tiles.
-📝 Tiles **PNG sin pérdida** en los niveles altos: JPEG destruye dígitos de 3×5 px.
+    data/tiles/{id}/
+    ├── meta.json       {"ancho":…, "alto":…, "tile":256, "niveles":…, "formato":"PNG"}  (se escribe al final = READY)
+    ├── {z}.pack        tiles del nivel z concatenados, en orden de llegada
+    └── {z}.idx         índice denso del nivel z
+
+**`{z}.idx`** (big-endian):
+
+| Offset | Tamaño | Campo |
+|---|---|---|
+| 0 | 4 | Firma `PIDX` |
+| 4 | 1 | Versión = 1 |
+| 5 | 3 | Reservado (0) |
+| 8 | 4 | Columnas `C_z` |
+| 12 | 4 | Filas `R_z` |
+| 16 + (y·C_z + x)·12 | 8 | Offset del tile `(x, y)` en `{z}.pack` |
+| 24 + (y·C_z + x)·12 | 4 | Longitud del tile; 0 = no escrito |
+
+- La entrada de un tile se **calcula**, no se busca: O(1) con cualquier cantidad de tiles.
+- Offset de 8 bytes: el nivel máximo de la imagen de 93 GB supera los 4 GB.
+- Al servir, los índices se cargan completos en RAM (≈ 7.6 MB para la imagen de 93 GB).
+- Imagen de 93 GB: 22 archivos en lugar de 635 214.
+- Los tiles se codifican en **PNG** (sin pérdida): las imágenes de evaluación son texto de colores planos; JPEG difumina dígitos de 3×5 px. El mensaje TILE los envía con `FMT = 2`.
 
 ### 22.3 Formatos de entrada
 

@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -16,6 +17,7 @@ public final class Catalogo {
 
     private static final String ID_VALIDO = "[A-Za-z0-9_-]{1,64}"; // PROTOCOLO.md §5.1
     private final Path raiz;
+    private final ConcurrentHashMap<String, Imagen> abiertas = new ConcurrentHashMap<>();   // un TileStore por imagen
 
     public Catalogo(Path raiz) {
         this.raiz = raiz;
@@ -43,13 +45,20 @@ public final class Catalogo {
         if (!id.matches(ID_VALIDO)) {
             return null;                   // también impide rutas como "../../algo"
         }
+        Imagen yaAbierta = abiertas.get(id);
+        if (yaAbierta != null) {
+            return yaAbierta;               // misma imagen = mismo TileStore = índice cargado una sola vez
+        }
         Path meta = raiz.resolve(id).resolve("meta.json");
         if (!Files.isRegularFile(meta)) {
             return null;
         }
         String json = Files.readString(meta);
         PyramidLayout piramide = new PyramidLayout(numero(json, "ancho"), numero(json, "alto"), numero(json, "tile"));
-        return new Imagen(id, piramide, new TileStore(raiz, id), texto(json, "formato"));
+        String formato = texto(json, "formato");
+        Imagen nueva = new Imagen(id, piramide, new TileStore(raiz, id, formato), formato);
+        Imagen previa = abiertas.putIfAbsent(id, nueva);     // si dos hilos llegan a la vez, gana uno
+        return previa != null ? previa : nueva;
     }
 
     // meta.json lo escribe nuestra ingesta con un formato fijo: basta una búsqueda simple
