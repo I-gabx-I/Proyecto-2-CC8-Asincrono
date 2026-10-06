@@ -281,8 +281,8 @@ El valor empieza tras el **primer** `:`. Clave repetida → `400`. Orden libre. 
 | `META` | S→C | `IMG`, `W`, `H`, `TS`, `L`, `FMT`, `RES` (0 = nueva, 1 = reanudada) | — | — | 🔁 |
 | `VIEWPORT` | C→S | `SEQ`, `Z`, `X`, `Y`, `VW`, `VH` | `IMAGE_OPEN` | tiles, paridades y `DONE` | 🔁 |
 | `BLOOM` | C→S | `MAX`, `SEM`, `BITS` | `IMAGE_OPEN` | ninguna | 📝 |
-| `REPORT` | C→S | `MAX`, `PERD`, `COLA`, `DEC`, `JIT`, `REC` | `IMAGE_OPEN` | `CTRL` | 📝 |
-| `CTRL` | S→C | `R`, `Q`, `E`, `TARDE` | — | — | 📝 |
+| `REPORT` | C→S | `MAX`, `PERD`, `COLA`, `DEC`, `JIT`, `REC` | `IMAGE_OPEN` | `CTRL` | ✅ |
+| `CTRL` | S→C | `R`, `Q`, `E`, `TARDE` | — | — | ✅ |
 | `CANCEL` | C→S | `SEQ` | `IMAGE_OPEN` | ninguna | ✅ |
 | `SIM` | C→S | `PERD`, `BW`, `LAT` | `READY`, `IMAGE_OPEN` | `SIM_OK` o `ERROR 403` | ✅ |
 | `SIM_OK` | S→C | `PERD`, `BW`, `LAT` (valores aplicados) | — | — | ✅ |
@@ -462,13 +462,13 @@ Cada mecanismo responde una sola pregunta y no conoce a los demás: el filtro de
 src/pimg/
 ├── transporte/              🟨 lógica pura, sin sockets ni archivos (probable por separado)
 │   ├── FecXor.java           armado de grupos entrelazados y cálculo de la paridad ✅
-│   ├── ControladorPI.java    tasa R a partir de los reportes
+│   ├── ControladorPI.java    tasa R a partir de los reportes ✅
 │   ├── FiltroBloom.java      estructura y hashes (idénticos a los de JS, §13.3)
 │   ├── PlanificadorEDF.java  cola por plazos ✅
 │   └── RedSimulada.java      pérdida, ancho de banda y latencia artificiales ✅
 └── protocol/SesionPimg.java  orquesta: usa transporte/, tiles/ y websocket/
     protocol/Enlace.java       ✅ hilo y cola FIFO de 4 MB que aplican la red simulada sobre el socket
-web/js/transporte/            🟨 fec.js ✅, bloom.js 📝, reportes.js 📝
+web/js/transporte/            🟨 fec.js ✅, bloom.js 📝, reportes.js ✅
 ```
 
 Dependencias: `protocol → transporte`; `transporte` no depende de nada del proyecto.
@@ -555,7 +555,7 @@ si faltantes ≥ 2:   no recuperable por FEC → camino de §15
 
 ---
 
-## 12. Mecanismo 2 — Control del ritmo con controlador PI 📝
+## 12. Mecanismo 2 — Control del ritmo con controlador PI ✅
 
 ### 12.1 Problema
 
@@ -624,15 +624,42 @@ Sin esto, durante una saturación larga la integral crecería sin límite y, al 
 
 **Ejemplo:** `Q = 20`, `I = 0` → `R = 40 + 4·(−12) = −8` → se satura en `R_min = 4`. Como `e < 0` empuja hacia abajo, la integral no acumula. Cuando el cliente se pone al día y `Q = 4`, `e = +4` → `R = 40 + 16 = 56` y la integral empieza a subir la tasa ~3 mensajes/s por reporte mientras `Q` siga bajo el objetivo.
 
+**Regla de reposo.** Tampoco se integra un error positivo si el servidor no tiene pedidos pendientes: sin demanda, `Q = 0` no significa que haya espacio que aprovechar. Sin esta regla, la integral llevaría `R` al máximo durante cualquier pausa (D-41).
+
 ### 12.6 Aplicación de la tasa (pacing)
 
 El emisor deja al menos `1/R` segundos entre mensajes binarios. Los mensajes de texto (`DONE`, `ERROR`, `CTRL`) no se espacian.
 
 **Protección:** si no llega ningún `REPORT` en `3 × RPT = 300 ms`, el servidor fija `R = R_min` hasta recibir el siguiente.
 
+El emisor espera su turno **antes** de sacar el siguiente pedido de la cola EDF, así la espera cuenta para `TARDE` (§14.4) y un tile de una vista cancelada durante la espera ya no sale. Con el servidor iniciado con `--sin-pi` no hay espera y `CTRL` informa `R:0` (modo de comparación, D-41).
+
 ### 12.7 Publicación: `CTRL`
 
 Tras cada `REPORT` el servidor responde `CTRL|R:<tasa>|Q:<ocupación>|E:<error>|TARDE:<%>`, para graficar la respuesta del controlador en el panel. `TARDE` es el porcentaje de mensajes enviados después de su plazo (§14.4).
+
+### 12.7.1 Resultados medidos
+
+**Simulación (`ProbarPI`)**, con el reporte retrasado 100 ms:
+
+| Escenario | Q máximo | Se establece en | Q final |
+|---|---|---|---|
+| Enlace de 10 tiles/s | 20.5 | 2.0 s | 8.0 |
+| Enlace de 200 tiles/s | 8.0 | 2.3 s | 8.0 |
+| Escalón de 200 a 10 tiles/s | 55.9 | 7.8 s | 8.0 |
+| `Kp = Ki = 10` (inestable) | 17.1 | no se establece | 15.7 |
+
+**En el navegador** (imagen de 1 GB, 300 KB/s y 80 ms, mismo procedimiento con y sin control):
+
+| | Sin PI (`--sin-pi`) | Con PI |
+|---|---|---|
+| Espera hasta ver el tile tras un zoom | ~20 s | **~7 s** |
+| Q máximo | 96 | **24** |
+| `TARDE` informado | 1.7 % | 53 % |
+
+Sin control, `TARDE` es bajo porque el servidor saca todo de inmediato y no ve los tiles formados en el enlace; con PI la espera ocurre en el servidor y se mide. Los ~7 s coinciden con el tiempo de establecimiento simulado para un escalón (7.8 s): el modelo predice el comportamiento real.
+
+**Cliente lento** (100 ms por tile, red sin límites): `R` baja sola de ~89 a ~10 msg/s y `Q` oscila alrededor de 8 mientras dura la ráfaga.
 
 ### 12.8 Ventajas, desventajas y mitigación
 
@@ -901,11 +928,11 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 - ✅ **Fundido** de 150 ms; **throttling** de un `VIEWPORT` cada 100 ms; decodificación asíncrona con época.
 - ✅ **Recepción v2:** valida la cabecera de 28 bytes y `NUM`; cuenta saltos en `PERD`.
 - ✅ **FEC en el cliente:** conserva los últimos 32 tiles y reconstruye con las paridades (§11.5).
-- 📝 **Reportes:** `REPORT` cada 100 ms (§12.2).
+- ✅ **Reportes:** `REPORT` cada 100 ms (§12.2).
 - 📝 **Filtro:** construye y envía `BLOOM` según §13.5.
 - 📝 **Re-declaración de vista** según §15.
 - ✅ **Reconexión:** backoff exponencial 1, 2, 4… máx. 30 s; 📝 conserva la caché y usa `RESUME`.
-- **Panel de depuración:** conexión, imagen, nivel, zoom, `SEQ`, tiles y MB en memoria, faltantes, bytes recibidos, % respecto al original. ✅ `NUM`, perdidos y controles de red simulada y cliente lento. 📝 Además: gráficas de `R` y `Q` en el tiempo; `REC`, `TARDE`, re-declaraciones.
+- **Panel de depuración:** conexión, imagen, nivel, zoom, `SEQ`, tiles y MB en memoria, faltantes, bytes recibidos, % respecto al original. ✅ `NUM`, perdidos, gráficas de `R` y `Q` en el tiempo y controles de red simulada y cliente lento. 📝 Además: `REC`, `TARDE`, re-declaraciones.
 
 ---
 
@@ -1090,8 +1117,8 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 | Experimento | Métrica |
 |---|---|
 | FEC con 1 %, 5 % y 10 % de pérdida | % de pérdidas recuperadas por FEC; re-declaraciones necesarias; bytes extra. **5 %, primera medición:** 2/2 recuperados; costo medido 30.4 % sobre los protegidos |
-| PI con escalón de ancho de banda | Sobrepico de `Q`, tiempo de establecimiento, error estacionario |
-| PI sin control (tasa fija) vs con PI | Tiles desperdiciados al cancelar una vista; espera del tile visible. **Sin PI, medido:** > 10 s con 300 KB/s (peor caso calculado 14 s) |
+| PI con escalón de ancho de banda | Sobrepico de `Q`, tiempo de establecimiento, error estacionario. **Medido:** sobrepico Q = 24 (simulado 55.9), establecimiento ~7 s (simulado 7.8 s) |
+| PI sin control (tasa fija) vs con PI | Tiles desperdiciados al cancelar una vista; espera del tile visible. **Sin PI, medido:** > 10 s con 300 KB/s (peor caso calculado 14 s). **Medido:** 20 s → 7 s; Q máximo 96 → 24 |
 | Bloom | Bytes de sincronización vs v1 (`EVICT`); falsos positivos observados; tiles no reenviados con `RESUME` |
 | EDF | % de plazos incumplidos según el ancho de banda |
 | Global | Bytes recibidos vs tamaño de la imagen al navegar 5 min en la imagen de 93 GB |
@@ -1108,7 +1135,7 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 | Alta | Cabecera v2 (`NUM`) + EDF | ✅ |
 | Alta | Red simulada + controles en el panel | ✅ |
 | Alta | FEC (servidor y cliente) | ✅ |
-| Alta | `REPORT` + controlador PI + `CTRL` + gráficas | 📝 |
+| Alta | `REPORT` + controlador PI + `CTRL` + gráficas | ✅ |
 | Alta | Bloom + `RESUME` + re-declaración (retira `EVICT` y `GET_TILE`) | 📝 |
 | Media | ARC en servidor (LRU como opción) | 📝 |
 | Media | Ingesta automática (`WatchService`, `PROCESSING` con %) | 📝 |

@@ -19,9 +19,12 @@ public class Main {
     public static void main(String[] args) throws Exception {
         int puerto = 8080;
         boolean redSimulada = false;
+        boolean controlRitmo = true;
         for (String a : args) {
             if (a.equals("--sim")) {
                 redSimulada = true;                           // PROTOCOLO.md §16
+            } else if (a.equals("--sin-pi")) {
+                controlRitmo = false;                         // experimento: sin control de ritmo (§12)
             } else {
                 puerto = Integer.parseInt(a);
             }
@@ -31,12 +34,14 @@ public class Main {
         Catalogo catalogo = new Catalogo(Path.of("data", "tiles"));
         TileCache cache = new TileCache(CACHE_BYTES);
 
-        final boolean simulada = redSimulada;               // la lambda necesita una variable final
+        final boolean simulada = redSimulada;               // la lambda necesita variables finales
+        final boolean conPI = controlRitmo;
         System.out.println("Red simulada: " + (simulada ? "ACTIVADA (--sim)" : "desactivada"));
+        System.out.println("Control de ritmo PI: " + (conPI ? "activado" : "DESACTIVADO (--sin-pi)"));
 
         // Una SesionPimg NUEVA por cada conexión WebSocket
         WebSocketHandler ws = new WebSocketHandler("pimg.v2",
-                () -> new SesionPimg(catalogo, cache, HEARTBEAT_SEG, TAM_TILE, simulada),
+                () -> new SesionPimg(catalogo, cache, HEARTBEAT_SEG, TAM_TILE, simulada, conPI),
                 HEARTBEAT_SEG, MAX_MENSAJE);
 
         Router router = new Router(new StaticFileHandler(Path.of("web"))).ruta("/ws", ws);

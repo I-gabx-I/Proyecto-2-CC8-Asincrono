@@ -1,5 +1,6 @@
 import { crc32 } from './crc32.js';
 import { ReceptorFec } from './transporte/fec.js';
+import { Reportero } from './transporte/reportes.js';
 
 const CABECERA = 28;                // PROTOCOLO.md §8.1
 
@@ -15,6 +16,8 @@ export class ClientePimg {
     this.stats = { bytes: 0, tiles: 0, crcMalos: 0, descartados: 0, perdidos: 0,
                    paridades: 0, recuperados: 0, irrecuperables: 0 };
     this.fec = new ReceptorFec(32);   // últimos 32 tiles recibidos, para reconstruir (§11.5)
+    this.reportero = new Reportero(); // mediciones para REPORT (§12.2)
+    this.temporizador = null;
   }
 
   conectar() {
@@ -25,12 +28,14 @@ export class ClientePimg {
       this.intentos = 0;
       this.ultimoNum = 0;             // conexión nueva: el servidor empieza otra vez en NUM = 1
       this.fec.vaciar();
+      this.reportero.reiniciar();
       this.ev.alEstado('conectado');
       this.enviar(`HELLO|V:2|CACHE:${this.ev.cacheMax}`);
     };
     ws.onmessage = e => (typeof e.data === 'string' ? this.alTexto(e.data) : this.alBinario(e.data));
     ws.onclose = () => {
       this.ws = null;
+      clearInterval(this.temporizador);
       this.reconectar();
     };
     this.ws = ws;
@@ -59,6 +64,14 @@ export class ClientePimg {
   pedirVista(z, x, y, vw, vh) {
     this.seq++;
     this.enviar(`VIEWPORT|SEQ:${this.seq}|Z:${z}|X:${x}|Y:${y}|VW:${vw}|VH:${vh}`);
+  }
+
+  /** REPORT cada 100 ms mientras haya una imagen abierta (§12.2). */
+  iniciarReportes() {
+    clearInterval(this.temporizador);
+    this.temporizador = setInterval(() => {
+      this.enviar(this.reportero.mensaje(this.ultimoNum, this.stats.perdidos, this.stats.recuperados));
+    }, 100);
   }
 
   simular(perd, bw, lat) {
@@ -97,10 +110,14 @@ export class ClientePimg {
         break;
       }
       case 'META':
+        this.iniciarReportes();
         this.ev.alMeta({ id: c.IMG, ancho: +c.W, alto: +c.H, tile: +c.TS, niveles: +c.L, formato: c.FMT });
         break;
       case 'DONE':
         this.ev.alDone(+c.SEQ, +c.SENT, +c.PAR);
+        break;
+      case 'CTRL':
+        this.ev.alCtrl({ r: +c.R, q: +c.Q, e: +c.E, tarde: +c.TARDE });
         break;
       case 'SIM_OK':
         this.ev.alSim({ perdida: +c.PERD, ancho: +c.BW, latencia: +c.LAT });
@@ -116,6 +133,7 @@ export class ClientePimg {
     this.stats.bytes += buf.byteLength;
     if (buf.byteLength < CABECERA) { this.stats.descartados++; return; }
 
+    this.reportero.llegada(performance.now());
     const v = new DataView(buf);                 // DataView lee big-endian por defecto
     const ver = v.getUint8(0), tipo = v.getUint8(1);
     const seq = v.getUint32(2), num = v.getUint32(6);

@@ -3,6 +3,7 @@ package pimg.protocol;
 import pimg.tiles.Catalogo;
 import pimg.tiles.PyramidLayout;
 import pimg.tiles.TileCache;
+import pimg.transporte.ControladorPI;
 import pimg.transporte.FecXor;
 import pimg.transporte.PlanificadorEDF;
 import pimg.websocket.WebSocketConnection;
@@ -10,8 +11,10 @@ import pimg.websocket.WebSocketListener;
 
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Condition;
@@ -39,6 +42,7 @@ public final class SesionPimg implements WebSocketListener {
     private final int heartbeatSeg;
     private final int tamTile;
     private final boolean redSimulada;                 // servidor iniciado con --sim (§16)
+    private final boolean controlRitmo;                // false con --sin-pi: el emisor no espera entre tiles
 
     private WebSocketConnection ws;
     private Enlace enlace;                             // salida al socket, directa o simulada
@@ -51,15 +55,22 @@ public final class SesionPimg implements WebSocketListener {
     private final Condition hayTrabajo = lockCola.newCondition();
     private final PlanificadorEDF<Pedido> cola = new PlanificadorEDF<>();   // EDF (§14), protegida por lockCola
     private Thread emisor;
-    private long num = 0;                              // NUM (§8.3): solo lo usa el hilo emisor
+    private volatile long num = 0;                     // NUM (§8.3): lo escribe solo el emisor; lo lee REPORT
+
+    // Control del ritmo (§12). El controlador lo usa solo el hilo lector (REPORT); el emisor lee la tasa.
+    private final ControladorPI pi = new ControladorPI();
+    private volatile double tasa = pi.tasa();          // R vigente, mensajes binarios por segundo
+    private volatile long ultimoReporte = 0;           // nanoTime del último REPORT (0 = todavía ninguno)
+    private long proximoEnvio = 0;                     // solo el emisor: no enviar otro binario antes de esto
 
     public SesionPimg(Catalogo catalogo, TileCache cache, int heartbeatSeg, int tamTile,
-                       boolean redSimulada) {
+                       boolean redSimulada, boolean controlRitmo) {
         this.catalogo = catalogo;
         this.cache = cache;
         this.heartbeatSeg = heartbeatSeg;
         this.tamTile = tamTile;
         this.redSimulada = redSimulada;
+        this.controlRitmo = controlRitmo;
     }
 
     // ======================= Eventos de la conexión =======================
@@ -86,6 +97,7 @@ public final class SesionPimg implements WebSocketListener {
                 case "EVICT"    -> { exigir(Estado.IMAGE_OPEN); evict(m); }
                 case "CANCEL"   -> { exigir(Estado.IMAGE_OPEN); cancel(m); }
                 case "SIM"      -> { exigir(Estado.READY, Estado.IMAGE_OPEN); sim(m); }
+                case "REPORT"   -> { exigir(Estado.IMAGE_OPEN); report(m); }
                 default -> throw new PimgException(PimgException.MALFORMED, "Comando desconocido: " + m.comando());
             }
         } catch (PimgException e) {
@@ -300,6 +312,49 @@ public final class SesionPimg implements WebSocketListener {
         log(String.format("SIM perdida=%d %% ancho=%d KB/s latencia=%d ms", perdida, ancho, latencia));
     }
 
+    /** REPORT (§12.2): medición del receptor. Actualiza el PI y responde CTRL (§12.7). No es un ACK. */
+    private void report(Mensaje m) throws PimgException, IOException {
+        long max = m.entero("MAX", 0, MAX_SEQ);
+        m.entero("PERD", 0, MAX_SEQ);
+        long colaCliente = m.entero("COLA", 0, 10_000);
+        m.entero("DEC", 0, 60_000);
+        m.entero("JIT", 0, 60_000);
+        m.entero("REC", 0, MAX_SEQ);
+
+        long q = Math.max(0, num - max) + colaCliente;   // en camino + esperando decodificarse (§12.3)
+        long ahora = System.nanoTime();
+        double dt = ultimoReporte == 0 ? 0.1 : Math.min(0.5, (ahora - ultimoReporte) / 1e9);
+        boolean hayDemanda;
+        double tarde;
+        lockCola.lock();
+        try {
+            hayDemanda = !cola.estaVacia();
+            tarde = cola.porcentajeTarde();
+        } finally {
+            lockCola.unlock();
+        }
+        double r = pi.actualizar(q, dt, hayDemanda);
+        tasa = r;
+        ultimoReporte = ahora;
+        enviar(Mensaje.de("CTRL").con("R", controlRitmo ? String.format(Locale.ROOT, "%.1f", r) : "0")
+                .con("Q", q).con("E", String.format(Locale.ROOT, "%.1f", pi.error()))
+                .con("TARDE", String.format(Locale.ROOT, "%.1f", tarde)));
+    }
+
+    /** Pacing (§12.6): espera hasta que toque el siguiente binario. Sin REPORT en 300 ms, R = R_min. */
+    private void esperarTurno() throws InterruptedException {
+        long espera = proximoEnvio - System.nanoTime();
+        if (espera > 0) {
+            Thread.sleep(Duration.ofNanos(espera));
+        }
+    }
+
+    private void programarSiguiente() {
+        boolean sinReportes = ultimoReporte != 0 && System.nanoTime() - ultimoReporte > 300_000_000L;
+        double r = sinReportes ? ControladorPI.R_MIN : tasa;
+        proximoEnvio = System.nanoTime() + (long) (1e9 / r);
+    }
+
     // ======================= Hilo emisor =======================
 
     private void bucleEmisor() {
@@ -309,12 +364,23 @@ public final class SesionPimg implements WebSocketListener {
         int paridadesEnSeq = 0;
         try {
             while (true) {
-                PlanificadorEDF.Turno<Pedido> turno;
-                long tardesTotal, atendidosTotal;
                 lockCola.lock();
                 try {
                     while (cola.estaVacia()) {
                         hayTrabajo.await();        // duerme sin gastar CPU hasta que haya trabajo
+                    }
+                } finally {
+                    lockCola.unlock();
+                }
+                if (controlRitmo) {
+                    esperarTurno();                // ANTES de sacar el pedido: la espera cuenta para TARDE
+                }
+                PlanificadorEDF.Turno<Pedido> turno;
+                long tardesTotal, atendidosTotal;
+                lockCola.lock();
+                try {
+                    if (cola.estaVacia()) {
+                        continue;                  // la vista se canceló mientras esperaba su turno
                     }
                     turno = cola.extraer(System.nanoTime());   // el de plazo más próximo (§14.2)
                     tardesTotal = cola.tardes();
@@ -339,12 +405,14 @@ public final class SesionPimg implements WebSocketListener {
                             cache.estadisticas()));
                 } else if (p.tipo() == Tipo.PARIDAD) {
                     if (enviarParidad(p)) {
+                        programarSiguiente();
                         paridadesEnSeq++;
                         if (turno.tarde()) {
                             tardeEnSeq++;
                         }
                     }
                 } else if (enviarTile(p)) {
+                    programarSiguiente();
                     enviadosEnSeq++;
                     if (turno.tarde()) {
                         tardeEnSeq++;
