@@ -1,4 +1,5 @@
 import { crc32 } from './crc32.js';
+import { ReceptorFec } from './transporte/fec.js';
 
 const CABECERA = 28;                // PROTOCOLO.md §8.1
 
@@ -11,7 +12,9 @@ export class ClientePimg {
     this.seqInicioImagen = Infinity;  // tiles con SEQ menor son de una imagen anterior
     this.intentos = 0;
     this.ultimoNum = 0;               // último NUM recibido en esta conexión (§8.3)
-    this.stats = { bytes: 0, tiles: 0, crcMalos: 0, descartados: 0, perdidos: 0 };
+    this.stats = { bytes: 0, tiles: 0, crcMalos: 0, descartados: 0, perdidos: 0,
+                   paridades: 0, recuperados: 0, irrecuperables: 0 };
+    this.fec = new ReceptorFec(32);   // últimos 32 tiles recibidos, para reconstruir (§11.5)
   }
 
   conectar() {
@@ -21,6 +24,7 @@ export class ClientePimg {
     ws.onopen = () => {
       this.intentos = 0;
       this.ultimoNum = 0;             // conexión nueva: el servidor empieza otra vez en NUM = 1
+      this.fec.vaciar();
       this.ev.alEstado('conectado');
       this.enviar(`HELLO|V:2|CACHE:${this.ev.cacheMax}`);
     };
@@ -48,6 +52,7 @@ export class ClientePimg {
 
   abrir(id) {
     this.seqInicioImagen = this.seq + 1;
+    this.fec.vaciar();                // las claves z,x,y de otra imagen no sirven
     this.enviar(`OPEN|IMG:${id}`);
   }
 
@@ -95,7 +100,7 @@ export class ClientePimg {
         this.ev.alMeta({ id: c.IMG, ancho: +c.W, alto: +c.H, tile: +c.TS, niveles: +c.L, formato: c.FMT });
         break;
       case 'DONE':
-        this.ev.alDone(+c.SEQ, +c.SENT);
+        this.ev.alDone(+c.SEQ, +c.SENT, +c.PAR);
         break;
       case 'SIM_OK':
         this.ev.alSim({ perdida: +c.PERD, ancho: +c.BW, latencia: +c.LAT });
@@ -121,7 +126,8 @@ export class ClientePimg {
     if (num > this.ultimoNum + 1) this.stats.perdidos += num - this.ultimoNum - 1;
     if (num > this.ultimoNum) this.ultimoNum = num;
 
-    if (tipo !== 1) { this.stats.descartados++; return; }      // PARIDAD (0x02) llega en la Fase 6
+    if (tipo === 2) { this.alParidad(v, buf, seq); return; }
+    if (tipo !== 1) { this.stats.descartados++; return; }
     const z = v.getUint8(10), x = v.getUint32(11), y = v.getUint32(15);
     const fmt = v.getUint8(19), largo = v.getUint32(20), crc = v.getUint32(24);
 
@@ -141,6 +147,38 @@ export class ClientePimg {
       return;
     }
     this.stats.tiles++;
+    this.fec.guardar(`${z},${x},${y}`, datos);
     this.ev.alTile(z, x, y, new Blob([datos], { type: fmt === 1 ? 'image/jpeg' : 'image/png' }));
+  }
+
+  /** PARIDAD (§8.2): si falta exactamente un miembro de su grupo, lo reconstruye (§11.5). */
+  alParidad(v, buf, seq) {
+    if (seq < this.seqInicioImagen) { this.stats.descartados++; return; }   // de una imagen anterior
+    const k = v.getUint8(10);
+    if (k < 2 || k > 4 || buf.byteLength < 19 + 18 * k) { this.stats.descartados++; return; }
+
+    const miembros = [];
+    for (let i = 0; i < k; i++) {
+      const o = 11 + 18 * i;
+      const z = v.getUint8(o), x = v.getUint32(o + 1), y = v.getUint32(o + 5);
+      miembros.push({ clave: `${z},${x},${y}`, z, x, y,
+                      fmt: v.getUint8(o + 9), largo: v.getUint32(o + 10), crc: v.getUint32(o + 14) });
+    }
+    const o = 11 + 18 * k;
+    const largoP = v.getUint32(o), crcP = v.getUint32(o + 4);
+    if (19 + 18 * k + largoP !== buf.byteLength) { this.stats.descartados++; return; }
+    const datosP = new Uint8Array(buf, o + 8, largoP);
+    if (crc32(datosP) !== crcP) { this.stats.crcMalos++; return; }
+
+    this.stats.paridades++;
+    const r = this.fec.procesar(miembros, datosP);
+    if (r.estado === 'recuperado') {
+      const t = r.tile;
+      this.stats.recuperados++;
+      this.fec.guardar(t.clave, r.datos);
+      this.ev.alTile(t.z, t.x, t.y, new Blob([r.datos], { type: t.fmt === 1 ? 'image/jpeg' : 'image/png' }));
+    } else if (r.estado !== 'innecesaria') {
+      this.stats.irrecuperables++;     // 2 o más faltantes, o la reconstrucción no pasó el CRC
+    }
   }
 }

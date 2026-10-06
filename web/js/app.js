@@ -81,7 +81,7 @@ const pimg = new ClientePimg({
     }
   },
 
-  alDone: (seq, sent) => { ultimoDone = `seq ${seq}: ${sent} tiles`; },
+  alDone: (seq, sent, par) => { ultimoDone = `seq ${seq}: ${sent} tiles + ${par || 0} paridades`; },
   alError: c => { ultimoError = `${c.CODE} ${c.MSG}`; },
   alSim: s => {
     simEstadoEl.textContent = `aplicado: ${s.perdida} % · ${s.ancho || '∞'} KB/s · ${s.latencia} ms`;
@@ -138,6 +138,9 @@ setInterval(() => {
     'Tiles recibidos': pimg.stats.tiles,
     'Ultimo NUM': pimg.ultimoNum,
     'Perdidos (saltos de NUM)': pimg.stats.perdidos,
+    'Paridades recibidas': pimg.stats.paridades,
+    'Recuperados por FEC (REC)': pimg.stats.recuperados,
+    'No recuperables por FEC': pimg.stats.irrecuperables,
     'Bytes recibidos': `${(pimg.stats.bytes / 2 ** 20).toFixed(2)} MB`,
     'vs. imagen original': m ? `${(100 * pimg.stats.bytes / bytesOriginal).toFixed(3)} %` : '—',
     'Expulsados (EVICT)': expulsadosTotal,

@@ -34,7 +34,7 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 | — | Ingesta de las 4 imágenes de evaluación (corrige el heap, D-37) | `fix/memoria-ingesta` | ✅ |
 | 4 | Cabecera v2 (`NUM`) + planificación EDF | `feat/edf` | ✅ |
 | 5 | Red simulada + controles en el panel | `feat/red-simulada` | ✅ |
-| 6 | FEC con paridad XOR entrelazada | `feat/fec` | ⬜ |
+| 6 | FEC con paridad XOR entrelazada | `feat/fec` | ✅ |
 | 7 | Controlador PI (`REPORT`, `CTRL`, gráficas) | `feat/control-pi` | ⬜ |
 | 8 | Filtros de Bloom, `RESUME` y re-declaración de vista | `feat/bloom-resume` | ⬜ |
 | 9 | ARC, ingesta automática y navegación ("ir a x, y") | `feat/extras` | ⬜ |
@@ -197,15 +197,24 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 
 ---
 
-## Fase 6 — FEC con paridad XOR ⬜
+## Fase 6 — FEC con paridad XOR ✅
 
 **Referencia:** `PROTOCOLO.md` §11.
 
-- [ ] `FecXor`: grupos entrelazados y cálculo de paridad
-- [ ] Mensaje binario `PARIDAD` (`TIPO = 0x02`)
-- [ ] Cliente: conserva los últimos 32 tiles y reconstruye; contador `REC`
+- [x] `FecXor`: grupos entrelazados y cálculo de paridad
+- [x] Mensaje binario `PARIDAD` (`TIPO = 0x02`)
+- [x] Cliente: conserva los últimos 32 tiles y reconstruye; contador `REC`
 
 **Criterio:** con 5 % de pérdida simulada, `REC` sube y la mayoría de los tiles se recuperan sin pedirlos.
+
+**Evidencia:**
+
+| Prueba | Resultado |
+|---|---|
+| `ProbarFec` | Grupos de §11.3 exactos; ráfagas de 1 a 4 tocan máximo 1 tile por grupo; 7 998/7 998 reconstrucciones correctas; con 2 faltantes el CRC rechaza; costo 30.4 % |
+| Sin pérdida (imagen de 1 GB) | 152 tiles + 18 paridades = `NUM` 170; `REC` 0 (no hizo falta) |
+| Pérdida 5 % | 178 tiles + 25 paridades + 2 perdidos = `NUM` 205; **2 de 2 perdidos recuperados por FEC**, 0 irrecuperables |
+| Ingesta de 1 GB en la laptop | 6 924/6 924 tiles en 15.4 s, 203 MB en disco, 421 MB de memoria |
 
 ---
 
