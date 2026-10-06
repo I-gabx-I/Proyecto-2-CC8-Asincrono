@@ -56,6 +56,10 @@ export class ClientePimg {
     this.enviar(`VIEWPORT|SEQ:${this.seq}|Z:${z}|X:${x}|Y:${y}|VW:${vw}|VH:${vh}`);
   }
 
+  simular(perd, bw, lat) {
+    this.enviar(`SIM|PERD:${perd}|BW:${bw}|LAT:${lat}`);
+  }
+
   pedirTile(z, x, y) {
     this.enviar(`GET_TILE|SEQ:${this.seq}|Z:${z}|X:${x}|Y:${y}`);
   }
@@ -92,6 +96,9 @@ export class ClientePimg {
         break;
       case 'DONE':
         this.ev.alDone(+c.SEQ, +c.SENT);
+        break;
+      case 'SIM_OK':
+        this.ev.alSim({ perdida: +c.PERD, ancho: +c.BW, latencia: +c.LAT });
         break;
       case 'ERROR':
         console.warn('PIMG ERROR', c.CODE, c.MSG);

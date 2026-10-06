@@ -17,15 +17,26 @@ public class Main {
     private static final long CACHE_BYTES = 128L * 1024 * 1024; // 128 MB compartidos por todos
 
     public static void main(String[] args) throws Exception {
-        int puerto = args.length > 0 ? Integer.parseInt(args[0]) : 8080;
+        int puerto = 8080;
+        boolean redSimulada = false;
+        for (String a : args) {
+            if (a.equals("--sim")) {
+                redSimulada = true;                           // PROTOCOLO.md §16
+            } else {
+                puerto = Integer.parseInt(a);
+            }
+        }
 
         // Recursos COMPARTIDOS por todas las sesiones
         Catalogo catalogo = new Catalogo(Path.of("data", "tiles"));
         TileCache cache = new TileCache(CACHE_BYTES);
 
+        final boolean simulada = redSimulada;               // la lambda necesita una variable final
+        System.out.println("Red simulada: " + (simulada ? "ACTIVADA (--sim)" : "desactivada"));
+
         // Una SesionPimg NUEVA por cada conexión WebSocket
         WebSocketHandler ws = new WebSocketHandler("pimg.v2",
-                () -> new SesionPimg(catalogo, cache, HEARTBEAT_SEG, TAM_TILE),
+                () -> new SesionPimg(catalogo, cache, HEARTBEAT_SEG, TAM_TILE, simulada),
                 HEARTBEAT_SEG, MAX_MENSAJE);
 
         Router router = new Router(new StaticFileHandler(Path.of("web"))).ruta("/ws", ws);

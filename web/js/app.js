@@ -17,6 +17,9 @@ let expulsadosTotal = 0;
 let ultimoDone = '—';
 let ultimoError = '—';
 let estadoTexto = 'desconectado';
+let lentoMs = 0;                       // "cliente lento": retardo artificial por tile (§16)
+let turnoDecodificacion = Promise.resolve();
+const simEstadoEl = document.getElementById('simEstado');
 
 const cache = new CacheTiles(CACHE_MAX, clave => {
   porExpulsar.push(clave);
@@ -61,16 +64,28 @@ const pimg = new ClientePimg({
     visor.cargarImagen(meta, mismaImagen);
   },
 
-  alTile: async (z, x, y, blob) => {
+  alTile: (z, x, y, blob) => {
     const miEpoca = epoca;
-    const bmp = await createImageBitmap(blob);   // decodifica fuera del hilo principal
-    if (miEpoca !== epoca) { bmp.close(); return; }
-    cache.poner(`${z},${x},${y}`, bmp);
-    visor.tileLlego(`${z},${x},${y}`);
+    const procesar = async () => {
+      if (lentoMs > 0) await new Promise(r => setTimeout(r, lentoMs));
+      const bmp = await createImageBitmap(blob);   // decodifica fuera del hilo principal
+      if (miEpoca !== epoca) { bmp.close(); return; }
+      cache.poner(`${z},${x},${y}`, bmp);
+      visor.tileLlego(`${z},${x},${y}`);
+    };
+    if (lentoMs > 0) {
+      // Cliente lento: de uno en uno, como un cliente que no da abasto (se acumulan)
+      turnoDecodificacion = turnoDecodificacion.then(procesar).catch(e => console.warn(e));
+    } else {
+      procesar();
+    }
   },
 
   alDone: (seq, sent) => { ultimoDone = `seq ${seq}: ${sent} tiles`; },
   alError: c => { ultimoError = `${c.CODE} ${c.MSG}`; },
+  alSim: s => {
+    simEstadoEl.textContent = `aplicado: ${s.perdida} % · ${s.ancho || '∞'} KB/s · ${s.latencia} ms`;
+  },
 });
 
 function abrir(id) {
@@ -131,5 +146,15 @@ setInterval(() => {
     'Ultimo error': ultimoError,
   });
 }, 250);
+
+// ---------- Red simulada y cliente lento ----------
+document.getElementById('simAplicar').addEventListener('click', () => {
+  pimg.simular(+document.getElementById('simPerd').value,
+               +document.getElementById('simBw').value,
+               +document.getElementById('simLat').value);
+});
+document.getElementById('lento').addEventListener('change', e => {
+  lentoMs = Math.max(0, +e.target.value);
+});
 
 pimg.conectar();
