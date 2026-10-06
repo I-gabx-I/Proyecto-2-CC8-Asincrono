@@ -28,9 +28,10 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 |---|---|---|---|
 | — | Base v1: HTTP/WebSocket propios, PIMG v1, cliente, ingesta en cascada | `main` | ✅ |
 | — | Especificación `pimg.v2` y registro de decisiones | `docs/protocolo-v2` | ✅ |
-| 1 | Lector PNG en streaming | `feat/png-source` | ⬜ |
-| 2 | Almacenamiento empaquetado + tiles PNG + ingesta reanudable | `feat/almacen-empaquetado` | ⬜ |
-| 3 | Legibilidad: zoom > 1:1 | `feat/legibilidad` | ⬜ |
+| 1 | Lector PNG en streaming | `feat/png-source` | ✅ |
+| 2 | Almacenamiento empaquetado + tiles PNG + ingesta reanudable | `feat/almacen-empaquetado` | ✅ |
+| 3 | Legibilidad: zoom > 1:1 | `feat/legibilidad` | ✅ |
+| — | Ingesta de las 4 imágenes de evaluación (corrige el heap, D-37) | `fix/memoria-ingesta` | ✅ |
 | 4 | Cabecera v2 (`NUM`) + planificación EDF | `feat/edf` | ⬜ |
 | 5 | Red simulada + controles en el panel | `feat/red-simulada` | ⬜ |
 | 6 | FEC con paridad XOR entrelazada | `feat/fec` | ⬜ |
@@ -44,34 +45,37 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 
 ---
 
-## Fase 1 — Lector PNG en streaming ⬜
+## Fase 1 — Lector PNG en streaming ✅
 
 **Objetivo:** leer las imágenes de evaluación de principio a fin una sola vez, con memoria acotada por el ancho.
-**Referencias:** `PROTOCOLO.md` §22.3 · `DECISIONES.md` D-12, D-13.
+**Referencias:** `PROTOCOLO.md` §22.3 · `DECISIONES.md` D-12, D-13, D-31, D-32 (reemplazada por D-37).
 
-- [X ] `PngSource`: chunks, `Inflater`, 5 filtros de fila, RGB de 8 bits
-- [ X] `Fuentes.abrir`: elige el lector por la firma del archivo, no por la extensión
-- [ X] `IngestMain` usa la interfaz `ImageSource`, no una clase concreta
-- [X ] Herramienta de verificación: comparar `PngSource` contra el lector del JDK, píxel por píxel
-- [ X] Verificación sobre las 10 imágenes pequeñas reales: todas idénticas
-- [ X] Ingesta completa de la imagen de 4 GB (36 743 px): anotar tiempo, disco y memoria
-- [ X] `--leer` sobre la imagen de 93 GB: anotar velocidad y memoria
-- [ X] Registrar en `DECISIONES.md` lo que se decida en la fase
-- [ X] Merge a `main`
+- [x] `PngSource`: chunks, `Inflater`, 5 filtros de fila, RGB de 8 bits
+- [x] `Fuentes.abrir`: elige el lector por la firma del archivo, no por la extensión
+- [x] `IngestMain` usa la interfaz `ImageSource`, no una clase concreta
+- [x] Herramienta de verificación: comparar `PngSource` contra el lector del JDK, píxel por píxel
+- [x] Verificación sobre las 10 imágenes pequeñas reales: todas idénticas
+- [x] Ingesta completa de la imagen de 4 GB (36 743 px): anotar tiempo, disco y memoria
+- [x] Lectura completa de la imagen de 93 GB: anotar velocidad y memoria (se hizo dentro de su ingesta)
+- [x] Registrar en `DECISIONES.md` lo que se decida en la fase
+- [x] Merge a `main`
 
 **Criterio de terminado:** la verificación da idéntico en todas las imágenes pequeñas y la de 93 GB se lee completa sin errores.
 
 **Evidencia:**
 
-Prueba	Resultado
-Verificación píxel por píxel (7 imágenes, 104 a 5775 px)	Idénticas al lector del JDK
-Lectura completa (12 900 y 18 305 px)	Sin errores
-Ingesta 5775 px	723/723 tiles, 0.8 s, 230 MB
-Ingesta 4 GB (36 743 px)	27 660/27 660 tiles, 109 s, 1179 MB en disco, 250 MB de memoria
-Velocidad del lector	~1500 MB/s desde caché; ~40 MB/s desde el disco duro (el límite es el disco)
+| Prueba | Resultado |
+|---|---|
+| Verificación píxel por píxel (7 imágenes, 104 a 5775 px) | Idénticas al lector del JDK |
+| Lectura completa (12 900 y 18 305 px) | Sin errores |
+| Ingesta 5775 px | 723/723 tiles, 0.8 s, 230 MB |
+| Ingesta 4 GB (36 743 px) | 27 660/27 660 tiles, 109 s, 1179 MB en disco, 250 MB de memoria |
+| Velocidad del lector | ~1500 MB/s desde caché; ~40 MB/s desde el disco duro (el límite es el disco) |
+| Lectura completa de la imagen de 93 GB (176 393 px) | Sin errores; 566.6 s de lectura (≈157 MB/s de píxeles) |
+
 ---
 
-## Fase 2 — Almacenamiento empaquetado + tiles PNG + ingesta reanudable ⬜
+## Fase 2 — Almacenamiento empaquetado + tiles PNG + ingesta reanudable ✅
 
 **Objetivo:** la imagen de 93 GB genera 635 214 tiles; como archivos sueltos son lentos de escribir, copiar y abrir. Además, los tiles pasan a PNG sin pérdida para que se lean los dígitos.
 **Referencias:** `PROTOCOLO.md` §22.2 · `DECISIONES.md` D-14, D-33.
@@ -79,42 +83,72 @@ Velocidad del lector	~1500 MB/s desde caché; ~40 MB/s desde el disco duro (el l
 - [X] Un archivo por nivel (`z.pack`) + índice `(x, y) → (offset, longitud)`
 - [X] `TileStore` lee del paquete; el servidor no cambia (solo usa `TileStore`)
 - [X] Ingesta reanudable: **descartada** (D-34). El PNG se lee secuencial desde el inicio igual; la ingesta de 4 GB tarda 34 s
-- [ ] Barra de progreso con tiempo estimado restante
-- [X] Tiles PNG sin pérdida (D-14): `TileEncoderPool` codifica en PNG y el mensaje TILE los envía con `FMT = 2`
-- [X] Ingesta completa de la imagen de 4 GB: tiempo, disco y memoria, comparados contra JPEG (1179 MB, 109 s)
+- [x] Tiles PNG sin pérdida (D-14): `TileEncoderPool` codifica en PNG y el mensaje TILE los envía con `FMT = 2`
+- [x] Ingesta completa de la imagen de 4 GB: tiempo, disco y memoria, comparados contra JPEG (1179 MB, 109 s)
+- [ ] ~~Barra de progreso con tiempo estimado restante~~ → se movió a la Fase 9 (junto con `PROCESSING` con %)
 
 **Criterio:** la imagen de 4 GB queda procesada y navegable con tiles PNG; tiempo, disco y memoria anotados.
 
 **Evidencia:**
 
-Prueba	Resultado
-Tiles PNG contra JPEG (4 GB)	836 MB contra 1179 MB: 29 % menos disco, sin pérdida
-Archivos de la pirámide (4 GB)	19 contra 27 660
-Tiempo de ingesta (4 GB)	33.6 s contra 117 s con archivos sueltos (3.5×)
-Índices .idx	Tamaño exacto 16 + tiles × 12 en los 9 niveles
-Lectura desde el paquete	27 660/27 660 tiles; 2.5 ms/tile incluyendo decodificación
-Fidelidad (5775 px)	Nivel máximo idéntico al original, píxel por píxel
+| Prueba | Resultado |
+|---|---|
+| Tiles PNG contra JPEG (4 GB) | 836 MB contra 1179 MB: 29 % menos disco, sin pérdida |
+| Archivos de la pirámide (4 GB) | 19 contra 27 660 |
+| Tiempo de ingesta (4 GB) | 33.6 s contra 117 s con archivos sueltos (3.5×) |
+| Índices .idx | Tamaño exacto 16 + tiles × 12 en los 9 niveles |
+| Lectura desde el paquete | 27 660/27 660 tiles; 2.5 ms/tile incluyendo decodificación |
+| Fidelidad (5775 px) | Nivel máximo idéntico al original, píxel por píxel |
 
 ---
 
-## Fase 3 — Legibilidad ⬜
+## Fase 3 — Legibilidad ✅
 
 **Objetivo:** que los dígitos de 3×5 px se lean claramente en la máxima definición.
 
-- [X] Zoom más allá de 1:1, ampliando sin suavizado (`imageSmoothingEnabled = false`)
-- [X] Coordenada de la imagen bajo el cursor
-- [X] Verificar visualmente con las imágenes pequeñas
+- [x] Zoom más allá de 1:1, ampliando sin suavizado (`imageSmoothingEnabled = false`)
+- [x] Coordenada de la imagen bajo el cursor
+- [x] Verificar visualmente con las imágenes pequeñas
 
 **Criterio:** en la imagen de 4 GB se lee cualquier número al máximo zoom.
 
 **Evidencia:**
 
-Prueba	Resultado
-Zoom máximo	1600 %: cada píxel como bloque nítido, dígitos de 3×5 px legibles
-Transferido al navegar hasta el máximo detalle	0.586 % de la imagen original
-Servidor leyendo del .pack (Fase 2 en uso real)	0 tiles faltantes, 0 CRC malos
-Caché compartida del servidor	Tras recargar la página, 9 de 9 tiles servidos desde RAM, sin tocar el disco
-Coordenada bajo el cursor	Correcta; desaparece fuera de la imagen
+| Prueba | Resultado |
+|---|---|
+| Zoom máximo | 1600 %: cada píxel como bloque nítido, dígitos de 3×5 px legibles |
+| Transferido al navegar hasta el máximo detalle | 0.586 % de la imagen original |
+| Servidor leyendo del .pack (Fase 2 en uso real) | 0 tiles faltantes, 0 CRC malos |
+| Caché compartida del servidor | Tras recargar la página, 9 de 9 tiles servidos desde RAM, sin tocar el disco |
+| Coordenada bajo el cursor | Correcta; desaparece fuera de la imagen |
+
+---
+
+## Ingesta de las imágenes de evaluación ✅
+
+**Rama:** `fix/memoria-ingesta` · **Referencia:** `DECISIONES.md` D-37.
+
+- [x] Ingesta de las imágenes de 17, 28, 55 y 93 GB
+- [x] Heap de la ingesta a 4 GB (con 1 GB, la de 93 GB falló en la franja 91/690 con `OutOfMemoryError`)
+- [x] Hilos del compresor *daemon*: si la ingesta falla, el proceso termina solo
+- [x] Navegación de la imagen de 93 GB hasta el máximo detalle
+
+**Criterio:** las 4 imágenes quedan procesadas; la de 93 GB es navegable y sus números se leen en la posición correcta.
+
+**Evidencia** (PC de pruebas: 16 GB de RAM, 6 hilos de compresión):
+
+| Imagen | Ancho (px) | Tiles | Tiempo | Disco | Memoria máx. (límite) |
+|---|---|---|---|---|---|
+| 17 GB | 75 471 | 116 274 / 116 274 | 148.7 s | 3 359 MB | 600 MB (1 GB) |
+| 28 GB | 96 922 | 191 840 / 191 840 | 271.8 s | 5 617 MB | 646 MB (1 GB) |
+| 55 GB | 136 325 | 379 388 / 379 388 | 601.2 s | 11 070 MB | 878 MB (1 GB) |
+| 93 GB | 176 393 | 635 214 / 635 214 | 1021.4 s | 17 594 MB | 1 455 MB (4 GB) |
+
+| Prueba | Resultado |
+|---|---|
+| Fallo provocado (`-Xmx48m`, imagen de 4 GB) | `OutOfMemoryError` y el proceso vuelve al prompt sin Ctrl+C |
+| Navegación de la imagen de 93 GB | Nivel 10 a 1600 %: 0 tiles faltantes, 0 CRC malos, 15.19 MB transferidos (0.017 % del original) |
+| Número leído en (x 104 662, y 47 912) | `032628176`; el cálculo por posición da 6 844 × 4 767 + 2 828 = 32 628 176 (números de 37 × 7 px, 4 767 por fila). La fila de arriba muestra `032623409` (4 767 menos) |
 
 ---
 
@@ -186,6 +220,7 @@ Coordenada bajo el cursor	Correcta; desaparece fuera de la imagen
 
 - [ ] ARC en `TileCache` (LRU como opción para comparar)
 - [ ] Ingesta automática con `WatchService` (`PROCESSING` con %, `FAILED`)
+- [ ] Barra de progreso de la ingesta con tiempo estimado restante (viene de la Fase 2)
 - [ ] Reingestar una imagen con el servidor corriendo: marcarla PROCESSING, sacarla de `Catalogo` y cerrar sus `.pack` antes de regenerarla
 - [ ] "Ir a x, y" en el cliente
 
