@@ -32,7 +32,7 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 | 2 | Almacenamiento empaquetado + tiles PNG + ingesta reanudable | `feat/almacen-empaquetado` | ✅ |
 | 3 | Legibilidad: zoom > 1:1 | `feat/legibilidad` | ✅ |
 | — | Ingesta de las 4 imágenes de evaluación (corrige el heap, D-37) | `fix/memoria-ingesta` | ✅ |
-| 4 | Cabecera v2 (`NUM`) + planificación EDF | `feat/edf` | ⬜ |
+| 4 | Cabecera v2 (`NUM`) + planificación EDF | `feat/edf` | ✅ |
 | 5 | Red simulada + controles en el panel | `feat/red-simulada` | ⬜ |
 | 6 | FEC con paridad XOR entrelazada | `feat/fec` | ⬜ |
 | 7 | Controlador PI (`REPORT`, `CTRL`, gráficas) | `feat/control-pi` | ⬜ |
@@ -152,16 +152,26 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 
 ---
 
-## Fase 4 — Cabecera v2 + EDF ⬜
+## Fase 4 — Cabecera v2 + EDF ✅
 
 **Referencia:** `PROTOCOLO.md` §8, §14.
 
-- [ ] Subprotocolo `pimg.v2`; cabecera binaria de 28 bytes con `NUM`
-- [ ] Cliente: valida `NUM` y cuenta saltos (`PERD`)
-- [ ] `PlanificadorEDF` en `src/pimg/transporte/` (cola de prioridad por plazo)
-- [ ] `SesionPimg` usa EDF; métrica `TARDE`
+- [x] Subprotocolo `pimg.v2`; cabecera binaria de 28 bytes con `NUM`
+- [x] Cliente: valida `NUM` y cuenta saltos (`PERD`)
+- [x] `PlanificadorEDF` en `src/pimg/transporte/` (cola de prioridad por plazo)
+- [x] `SesionPimg` usa EDF; métrica `TARDE`
 
 **Criterio:** el orden de envío es del centro hacia afuera y `TARDE` se reporta.
+
+**Evidencia:**
+
+| Prueba | Resultado |
+|---|---|
+| Cabecera v2 en el navegador | `Ultimo NUM` = `Tiles recibidos` (193 y 201), `Perdidos` 0, CRC malos 0 |
+| DevTools | `101 Switching Protocols`, `Sec-WebSocket-Protocol: pimg.v2` |
+| Rechazo de clientes v1 | Subprotocolo `pimg.v1` → `400`; `HELLO V:1` → `ERROR 426` y cierre `1002` |
+| `ProbarEDF` | 9/9 OK; ~100 ns por trabajo; mismo orden que v1 en 10 000 vistas (226 874 tiles) |
+| `TARDE` en localhost | `img093`, zona sin caché: 9 de 201 tiles tarde (4.5 %), por la lectura en frío del disco |
 
 ---
 

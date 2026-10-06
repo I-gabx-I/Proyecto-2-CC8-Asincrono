@@ -121,6 +121,8 @@ setInterval(() => {
     'Memoria de tiles': `${(cache.bytesEstimados() / 2 ** 20).toFixed(1)} MB`,
     'Faltan en pantalla': visor.faltantes,
     'Tiles recibidos': pimg.stats.tiles,
+    'Ultimo NUM': pimg.ultimoNum,
+    'Perdidos (saltos de NUM)': pimg.stats.perdidos,
     'Bytes recibidos': `${(pimg.stats.bytes / 2 ** 20).toFixed(2)} MB`,
     'vs. imagen original': m ? `${(100 * pimg.stats.bytes / bytesOriginal).toFixed(3)} %` : '—',
     'Expulsados (EVICT)': expulsadosTotal,

@@ -24,7 +24,7 @@ public class Main {
         TileCache cache = new TileCache(CACHE_BYTES);
 
         // Una SesionPimg NUEVA por cada conexión WebSocket
-        WebSocketHandler ws = new WebSocketHandler("pimg.v1",
+        WebSocketHandler ws = new WebSocketHandler("pimg.v2",
                 () -> new SesionPimg(catalogo, cache, HEARTBEAT_SEG, TAM_TILE),
                 HEARTBEAT_SEG, MAX_MENSAJE);
 

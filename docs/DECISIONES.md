@@ -158,7 +158,7 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 - **Por qué no es "zoom tipo Amazon":** no se interpola ni se inventa detalle; se muestran los píxeles reales del nivel máximo, que llegaron como tiles por el protocolo.
 - **Por qué el suavizado depende del zoom:** al ampliar, suavizar difumina los bordes; al reducir, no suavizar produce aliasing (moiré) en el texto.
 
-### D-37 · Heap de la ingesta: 4 GB, y los hilos del compresor son daemon (corrige D-32)
+### D-37 · Heap de la ingesta: 4 GB, y los hilos del compresor son daemon (corrige D-32) · 2026-10-05 · Vigente
 
 **Problema.** La ingesta de 93 GB (176 393 px de ancho) falló en la franja 91/690 con `OutOfMemoryError` en `Reductor.reducir`, precedido por `Retried waiting for GCLocker too often`. Además, el proceso quedó colgado después del error.
 
@@ -172,3 +172,8 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 - `TileEncoderPool` crea sus hilos con `Thread.ofPlatform().daemon()`. En una ingesta normal no cambia nada (`terminar()` espera a todos los tiles). Ante un error, el proceso termina solo.
 
 **Verificación.** Con `-Xmx48m` sobre la imagen de 4 GB se provoca `OutOfMemoryError` y el proceso vuelve al prompt sin Ctrl+C. La ingesta de 93 GB con `-Xmx4g`: ver `PLAN.md`.
+
+### D-38 · EDF: la cola por plazos vive en `transporte/` y no lee el reloj · 2026-10-05 · Vigente
+- **Contexto:** la cola de v1 (`ArrayDeque`, ordenada una vez) no puede intercalar paridades ni medir la atención al usuario.
+- **Decisión:** `PlanificadorEDF<T>` genérico en `pimg.transporte`, sin lock propio (lo protege `lockCola` de la sesión) y sin leer el reloj: recibe los plazos y el instante actual. Los empates se resuelven por orden de inserción con un contador, porque `PriorityQueue` no es estable. La distancia de §6 está en un solo lugar (`Vista.distancia`), y la usan tanto el orden de los visibles como los plazos.
+- **Consecuencias:** se prueba aislado con tiempos inventados (`ProbarEDF`, 9 pruebas, ~100 ns por trabajo). Con una sola vista, el orden es idéntico al de v1 (verificado en 10 000 vistas). `GET_TILE` con la cola llena ahora se ignora, en lugar de descartar "el más antiguo" (concepto que no existe en una cola por plazos); `GET_TILE` se elimina en la Fase 8.

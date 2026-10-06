@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-/** Tiles visibles de una vista (PROTOCOLO.md §4.3), ordenados del centro hacia afuera. */
+/** Tiles visibles de una vista (PROTOCOLO.md §6), ordenados del centro hacia afuera. */
 public final class Vista {
     private Vista() {}
 
@@ -30,13 +30,18 @@ public final class Vista {
                 tiles.add(new Tile(z, x, y));
             }
         }
-        double cx = vx + vw / 2.0;
-        double cy = vy + vh / 2.0;
-        tiles.sort(Comparator.comparingDouble(t -> {
-            double dx = (t.x() + 0.5) * T - cx;
-            double dy = (t.y() + 0.5) * T - cy;
-            return dx * dx + dy * dy;                          // distancia² al centro de la vista
-        }));
+        tiles.sort(Comparator.comparingDouble(t -> distancia(T, t, vx, vy, vw, vh)));
         return tiles;
+    }
+
+    /**
+     * Distancia del centro del tile al centro de la vista, en unidades de tile (§6):
+     * dist = √[((x + 0.5)·T − (X + VW/2))² + ((y + 0.5)·T − (Y + VH/2))²] / T.
+     * La usan el orden de tilesVisibles y los plazos de EDF (§14.2): una sola fórmula para ambos.
+     */
+    public static double distancia(int T, Tile t, long vx, long vy, long vw, long vh) {
+        double dx = (t.x() + 0.5) * T - (vx + vw / 2.0);
+        double dy = (t.y() + 0.5) * T - (vy + vh / 2.0);
+        return Math.sqrt(dx * dx + dy * dy) / T;
     }
 }
