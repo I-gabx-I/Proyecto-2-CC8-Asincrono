@@ -13,8 +13,11 @@ const panelEl = document.getElementById('panel');
 
 let imagenActual = null;
 let epoca = 0;               // cambia con cada META: descarta decodificaciones de otra imagen
-let porExpulsar = [];
 let expulsadosTotal = 0;
+const pendientes = new Set();          // recibidos que todavía se decodifican: también cuentan como "los tengo"
+const MAX_REDECLARACIONES = 3;         // §15: máximo de intentos por vista; el 3.º con otra semilla
+let intentosRedeclaracion = 0;
+let redeclaraciones = 0;
 let ultimoDone = '—';
 let ultimoError = '—';
 let estadoTexto = 'desconectado';
@@ -26,9 +29,9 @@ const grafica = new GraficaControl(document.getElementById('grafica'));
 const ctrlTextoEl = document.getElementById('ctrlTexto');
 let ultimoCtrl = null;
 
-const cache = new CacheTiles(CACHE_MAX, clave => {
-  porExpulsar.push(clave);
+const cache = new CacheTiles(CACHE_MAX, () => {
   expulsadosTotal++;
+  pimg.marcarCambio(true);             // antes del próximo VIEWPORT va un filtro nuevo (§13.5)
 });
 const visor = new Visor(document.getElementById('lienzo'), cache, () => programarVista());
 const coordEl = document.getElementById('coord');
@@ -38,6 +41,7 @@ visor.onCursor = p => {
 
 const pimg = new ClientePimg({
   cacheMax: CACHE_MAX,
+  clavesEnPoder: () => [...cache.claves(), ...pendientes],
 
   alEstado: texto => {
     estadoTexto = texto;
@@ -56,21 +60,28 @@ const pimg = new ClientePimg({
     const id = imagenActual ?? lista.find(i => i.estado === 'READY')?.id;
     if (id) {
       selector.value = id;
-      abrir(id);             // también sirve para reabrir tras una reconexión
+      abrir(id, true);       // también sirve para reabrir tras una reconexión
     }
   },
 
   alMeta: meta => {
     const mismaImagen = visor.meta?.id === meta.id;
-    epoca++;
-    cache.vaciar();          // el servidor empezó un registro nuevo: el cliente también
-    porExpulsar = [];
     ultimaVista = '';
+    intentosRedeclaracion = 0;
+    if (meta.reanudada) {    // RESUME (§13.6): se conserva la caché; el servidor ya sabe qué tiene
+      visor.cargarImagen(meta, true);
+      return;
+    }
+    epoca++;
+    cache.vaciar();          // imagen nueva: el servidor parte de un filtro vacío y el cliente también
     visor.cargarImagen(meta, mismaImagen);
   },
 
   alTile: (z, x, y, blob) => {
     const miEpoca = epoca;
+    const clave = `${z},${x},${y}`;
+    pendientes.add(clave);
+    pimg.marcarCambio(false);
     pimg.reportero.inicioDecodificacion();       // COLA del REPORT: recibido, sin decodificar
     const procesar = async () => {
       const t0 = performance.now();
@@ -81,6 +92,7 @@ const pimg = new ClientePimg({
         cache.poner(`${z},${x},${y}`, bmp);
         visor.tileLlego(`${z},${x},${y}`);
       } finally {
+        pendientes.delete(clave);
         pimg.reportero.finDecodificacion(performance.now() - t0);
       }
     };
@@ -92,7 +104,10 @@ const pimg = new ClientePimg({
     }
   },
 
-  alDone: (seq, sent, par) => { ultimoDone = `seq ${seq}: ${sent} tiles + ${par || 0} paridades`; },
+  alDone: (seq, sent, par) => {
+    ultimoDone = `seq ${seq}: ${sent} tiles + ${par || 0} paridades`;
+    if (seq === pimg.seq) setTimeout(() => revisarVista(seq), 250);   // §15: ¿quedó completa la vista?
+  },
   alError: c => { ultimoError = `${c.CODE} ${c.MSG}`; },
   alCtrl: c => {
     ultimoCtrl = c;
@@ -103,9 +118,30 @@ const pimg = new ClientePimg({
   },
 });
 
-function abrir(id) {
+function abrir(id, reconexion = false) {
   imagenActual = id;
-  pimg.abrir(id);
+  if (reconexion && visor.meta?.id === id && cache.tamanio > 0) {
+    pimg.reanudar(id);       // RESUME: la caché sigue en memoria (§13.6)
+  } else {
+    pimg.abrir(id);
+  }
+}
+
+/**
+ * Re-declaración de vista (§15). Tras el DONE de la vista vigente, si faltan tiles en pantalla y no hay
+ * nada decodificándose, el cliente vuelve a declarar su ESTADO (filtro) y su VISTA (mismo VIEWPORT, SEQ
+ * nuevo). No dice qué tiles faltan: el servidor decide con las reglas de siempre. No es un NACK.
+ */
+function revisarVista(seq) {
+  if (seq !== pimg.seq || pendientes.size > 0 || visor.faltantes === 0) return;
+  if (intentosRedeclaracion >= MAX_REDECLARACIONES) return;   // se espera al próximo movimiento
+  const v = visor.vistaActual();
+  if (!v) return;
+  intentosRedeclaracion++;
+  if (intentosRedeclaracion === MAX_REDECLARACIONES) pimg.cambiarSemilla();   // ¿falso positivo? (§13.7)
+  redeclaraciones++;
+  pimg.enviarBloom();
+  pimg.pedirVista(v.z, v.x, v.y, v.vw, v.vh);
 }
 selector.addEventListener('change', () => abrir(selector.value));
 
@@ -129,10 +165,8 @@ function enviarVista() {
   const firma = `${v.z}|${v.x}|${v.y}|${v.vw}|${v.vh}`;
   if (firma === ultimaVista) return;            // nada cambió
   ultimaVista = firma;
-  if (porExpulsar.length) {                     // primero EVICT, para que el servidor pueda reenviarlos
-    pimg.evict(porExpulsar);
-    porExpulsar = [];
-  }
+  intentosRedeclaracion = 0;                    // vista nueva del usuario
+  if (pimg.expulsiones) pimg.enviarBloom();     // §13.5: primero el filtro, si hubo expulsiones
   pimg.pedirVista(v.z, v.x, v.y, v.vw, v.vh);
   ultimoEnvio = performance.now();
 }
@@ -161,7 +195,9 @@ setInterval(() => {
     'TARDE (plazos incumplidos)': ultimoCtrl ? `${ultimoCtrl.tarde} %` : '—',
     'Bytes recibidos': `${(pimg.stats.bytes / 2 ** 20).toFixed(2)} MB`,
     'vs. imagen original': m ? `${(100 * pimg.stats.bytes / bytesOriginal).toFixed(3)} %` : '—',
-    'Expulsados (EVICT)': expulsadosTotal,
+    'Expulsados de la cache': expulsadosTotal,
+    'Filtros BLOOM enviados (SEM)': `${pimg.stats.filtros} (SEM ${pimg.sem})`,
+    'Re-declaraciones de vista': redeclaraciones,
     'Descartados / CRC malo': `${pimg.stats.descartados} / ${pimg.stats.crcMalos}`,
     'Ultimo DONE': ultimoDone,
     'Ultimo error': ultimoError,

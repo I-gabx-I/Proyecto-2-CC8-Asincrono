@@ -5,6 +5,7 @@ import pimg.tiles.PyramidLayout;
 import pimg.tiles.TileCache;
 import pimg.transporte.ControladorPI;
 import pimg.transporte.FecXor;
+import pimg.transporte.FiltroBloom;
 import pimg.transporte.PlanificadorEDF;
 import pimg.websocket.WebSocketConnection;
 import pimg.websocket.WebSocketListener;
@@ -13,14 +14,15 @@ import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
-/** Sesión PIMG de UN cliente: máquina de estados, tiles enviados y cola de envío con cancelación. */
+/** Sesión PIMG de UN cliente: máquina de estados, estado de su caché (Bloom) y cola de envío con cancelación. */
 public final class SesionPimg implements WebSocketListener {
     private enum Estado { CONNECTED, READY, IMAGE_OPEN, CLOSED }
     private enum Tipo { TILE, PARIDAD, DONE }
@@ -49,7 +51,10 @@ public final class SesionPimg implements WebSocketListener {
     private volatile Estado estado = Estado.CONNECTED;
     private volatile Catalogo.Imagen imagen;           // imagen abierta
     private long seqVigente = -1;                      // solo lo usa el hilo lector
-    private final Set<Long> enviados = ConcurrentHashMap.newKeySet();
+
+    // Lo que tiene el cliente (§13.4), protegido por lockCola: su último filtro de Bloom más lo enviado después
+    private FiltroBloom filtro = new FiltroBloom(0);
+    private final LinkedHashMap<Long, Long> enviadosRecientes = new LinkedHashMap<>();   // clave -> NUM, en orden de envío
 
     private final ReentrantLock lockCola = new ReentrantLock();
     private final Condition hayTrabajo = lockCola.newCondition();
@@ -93,8 +98,8 @@ public final class SesionPimg implements WebSocketListener {
                 case "LIST"     -> { exigir(Estado.READY, Estado.IMAGE_OPEN); list(); }
                 case "OPEN"     -> { exigir(Estado.READY, Estado.IMAGE_OPEN); open(m); }
                 case "VIEWPORT" -> { exigir(Estado.IMAGE_OPEN); viewport(m); }
-                case "GET_TILE" -> { exigir(Estado.IMAGE_OPEN); getTile(m); }
-                case "EVICT"    -> { exigir(Estado.IMAGE_OPEN); evict(m); }
+                case "RESUME"   -> { exigir(Estado.READY); resume(m); }
+                case "BLOOM"    -> { exigir(Estado.IMAGE_OPEN); bloom(m); }
                 case "CANCEL"   -> { exigir(Estado.IMAGE_OPEN); cancel(m); }
                 case "SIM"      -> { exigir(Estado.READY, Estado.IMAGE_OPEN); sim(m); }
                 case "REPORT"   -> { exigir(Estado.IMAGE_OPEN); report(m); }
@@ -125,10 +130,10 @@ public final class SesionPimg implements WebSocketListener {
         lockCola.lock();
         try {
             cola.vaciar();
+            enviadosRecientes.clear();             // el servidor no conserva sesiones cerradas (§5.3)
         } finally {
             lockCola.unlock();
         }
-        enviados.clear();                          // el servidor no conserva sesiones cerradas (§5.3)
         log("sesion cerrada (codigo " + codigo + ") | " + cache.estadisticas());
     }
 
@@ -140,9 +145,10 @@ public final class SesionPimg implements WebSocketListener {
         if (v != VERSION) {
             throw new PimgException(PimgException.VERSION_UNSUPPORTED, "Version no soportada: " + v);
         }
-        m.entero("CACHE", 1, 1_000_000);           // se valida; en la demo el servidor se basa en EVICT
+        m.entero("CACHE", 1, 1_000_000);           // se valida; lo que tiene el cliente lo dice su filtro
         estado = Estado.READY;
-        enviar(Mensaje.de("HELLO_OK").con("V", VERSION).con("HB", heartbeatSeg).con("TS", tamTile));
+        enviar(Mensaje.de("HELLO_OK").con("V", VERSION).con("HB", heartbeatSeg).con("TS", tamTile)
+                .con("BM", FiltroBloom.M).con("BK", FiltroBloom.K).con("RPT", 100));
     }
 
     private void list() throws PimgException, IOException {
@@ -161,7 +167,17 @@ public final class SesionPimg implements WebSocketListener {
     }
 
     private void open(Mensaje m) throws PimgException, IOException {
+        abrir(m.texto("IMG"), new FiltroBloom(0), false);         // filtro vacío: el cliente no tiene nada
+    }
+
+    /** RESUME (§13.6): como OPEN, pero el cliente conserva su caché y la describe con su filtro. */
+    private void resume(Mensaje m) throws PimgException, IOException {
         String id = m.texto("IMG");
+        int semilla = (int) m.entero("SEM", 0, MAX_SEQ);
+        abrir(id, new FiltroBloom(semilla, bits(m)), true);
+    }
+
+    private void abrir(String id, FiltroBloom inicial, boolean reanudada) throws PimgException, IOException {
         Catalogo.Imagen img;
         try {
             img = catalogo.buscar(id);
@@ -173,18 +189,60 @@ public final class SesionPimg implements WebSocketListener {
         }
         lockCola.lock();
         try {
-            cola.vaciar();                         // §7.3: OPEN vacía la cola...
+            cola.vaciar();                         // §7.3: vacía la cola...
+            filtro = inicial;                      // ...y lo que se sabe de la caché del cliente
+            enviadosRecientes.clear();
         } finally {
             lockCola.unlock();
         }
-        enviados.clear();                          // ...y el registro de enviados
         imagen = img;
         estado = Estado.IMAGE_OPEN;
 
         PyramidLayout p = img.piramide();
         enviar(Mensaje.de("META").con("IMG", id).con("W", p.anchoOriginal()).con("H", p.altoOriginal())
-                .con("TS", p.tile()).con("L", p.niveles()).con("FMT", img.formato()));
-        log("OPEN " + id);
+                .con("TS", p.tile()).con("L", p.niveles()).con("FMT", img.formato()).con("RES", reanudada ? 1 : 0));
+        log(reanudada ? "RESUME " + id + " | filtro con " + inicial.bitsEncendidos() + " bits en 1" : "OPEN " + id);
+    }
+
+    /** BLOOM (§13.4): reemplaza el filtro y olvida lo enviado con NUM ≤ MAX; desde ahora eso lo decide el filtro. */
+    private void bloom(Mensaje m) throws PimgException {
+        long max = m.entero("MAX", 0, MAX_SEQ);
+        int semilla = (int) m.entero("SEM", 0, MAX_SEQ);
+        FiltroBloom nuevo = new FiltroBloom(semilla, bits(m));
+        int olvidados = 0;
+        int quedan;
+        lockCola.lock();
+        try {
+            filtro = nuevo;
+            Iterator<Long> it = enviadosRecientes.values().iterator();   // en orden de NUM creciente
+            while (it.hasNext() && it.next() <= max) {
+                it.remove();
+                olvidados++;
+            }
+            quedan = enviadosRecientes.size();
+        } finally {
+            lockCola.unlock();
+        }
+        log(String.format("BLOOM max=%d sem=%d | %d bits en 1 | %d envios ya cubiertos, %d posteriores",
+                max, semilla, nuevo.bitsEncendidos(), olvidados, quedan));
+    }
+
+    /** BITS (§7.2): Base64 de exactamente 512 bytes; si no, 400. */
+    private static byte[] bits(Mensaje m) throws PimgException {
+        try {
+            byte[] b = Base64.getDecoder().decode(m.texto("BITS"));
+            if (b.length == FiltroBloom.BYTES) {
+                return b;
+            }
+        } catch (IllegalArgumentException e) {
+            // cae al error de abajo
+        }
+        throw new PimgException(PimgException.MALFORMED, "BITS debe ser Base64 de " + FiltroBloom.BYTES + " bytes");
+    }
+
+    /** §13.4: el cliente tiene t si su filtro lo dice o si se le envió después de esa instantánea. Con lockCola. */
+    private boolean tiene(Vista.Tile t) {
+        return filtro.contiene(t.z(), t.x(), t.y()) || enviadosRecientes.containsKey(t.clave());
     }
 
     private void viewport(Mensaje m) throws PimgException {
@@ -214,8 +272,8 @@ public final class SesionPimg implements WebSocketListener {
             seqVigente = seq;
             cola.vaciar();                         // CANCELA todo lo pendiente de vistas anteriores
             for (Vista.Tile t : visibles) {
-                if (enviados.contains(t.clave())) {
-                    continue;                      // el cliente ya lo tiene
+                if (tiene(t)) {
+                    continue;                      // el cliente ya lo tiene (o está en camino)
                 }
                 if (nuevos == COLA_MAX - 5) {      // deja lugar a 4 paridades y al DONE
                     break;                         // vista enorme: se quedan los del centro
@@ -245,49 +303,8 @@ public final class SesionPimg implements WebSocketListener {
         } finally {
             lockCola.unlock();
         }
-        log(String.format("VIEWPORT seq=%d z=%d -> %d visibles, %d nuevos (%d ya enviados), %d paridades",
+        log(String.format("VIEWPORT seq=%d z=%d -> %d visibles, %d nuevos (%d ya los tiene), %d paridades",
                 seq, z, visibles.size(), nuevos, visibles.size() - nuevos, paridades));
-    }
-
-    private void getTile(Mensaje m) throws PimgException {
-        long seq = m.entero("SEQ", 0, MAX_SEQ);
-        int z = (int) m.entero("Z", 0, 255);
-        int x = (int) m.entero("X", 0, Integer.MAX_VALUE);
-        int y = (int) m.entero("Y", 0, Integer.MAX_VALUE);
-        Catalogo.Imagen img = imagen;
-        if (!img.piramide().existe(z, x, y)) {
-            throw new PimgException(PimgException.OUT_OF_RANGE, "Tile fuera de la piramide: " + z + "," + x + "," + y);
-        }
-        lockCola.lock();
-        try {
-            if (cola.tamanio() >= COLA_MAX) {
-                return;                            // cola llena: se ignora (GET_TILE se retira en la Fase 8)
-            }
-            // Reenvío urgente: plazo como el de un tile en el centro de la vista
-            cola.agregar(new Pedido(Tipo.TILE, img, seq, z, x, y, null), PlanificadorEDF.plazoTile(System.nanoTime(), 0));
-            hayTrabajo.signal();
-        } finally {
-            lockCola.unlock();
-        }
-    }
-
-    private void evict(Mensaje m) throws PimgException {
-        String lista = m.texto("TILES");
-        if (lista.isEmpty()) {
-            return;
-        }
-        for (String t : lista.split(";")) {
-            String[] partes = t.split(",");
-            try {
-                if (partes.length != 3) {
-                    throw new NumberFormatException();
-                }
-                enviados.remove(new Vista.Tile(Integer.parseInt(partes[0]),
-                        Integer.parseInt(partes[1]), Integer.parseInt(partes[2])).clave());
-            } catch (NumberFormatException e) {
-                throw new PimgException(PimgException.MALFORMED, "Tile mal formado: " + t);
-            }
-        }
     }
 
     private void cancel(Mensaje m) throws PimgException {
@@ -437,7 +454,14 @@ public final class SesionPimg implements WebSocketListener {
         byte formato = img.formato().equals("PNG") ? TileFrame.FMT_PNG : TileFrame.FMT_JPEG;
         enlace.enviarBinario(TileFrame.construir(p.seq(), ++num, p.z(), p.x(), p.y(), formato, datos));
         if (img == imagen) {
-            enviados.add(new Vista.Tile(p.z(), p.x(), p.y()).clave()); // se marca AL ENVIAR, no al encolar
+            long clave = new Vista.Tile(p.z(), p.x(), p.y()).clave();
+            lockCola.lock();
+            try {
+                enviadosRecientes.remove(clave);   // un reenvío pasa al final, con su NUM nuevo
+                enviadosRecientes.put(clave, num); // se marca AL ENVIAR (§13.4), no al encolar
+            } finally {
+                lockCola.unlock();
+            }
         }
         return true;
     }
