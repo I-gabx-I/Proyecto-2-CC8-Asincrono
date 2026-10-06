@@ -197,3 +197,11 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 - **Q incluye la cola del enlace:** `Q = (último NUM enviado − MAX) + COLA`. Lo que espera en el enlace simulado cuenta como "en camino", que es justo lo que el PI debe limitar.
 - **Sintonía:** se mantienen `Kp = 4`, `Ki = 8`. Con el retraso de un reporte (100 ms), `Kp ≥ 10` oscila y no se estabiliza (`ProbarPI`, prueba 6). `Kp = Ki = 8` estabiliza un escalón en 6.8 s en lugar de 7.8 s, con menos margen de estabilidad: no compensa.
 - **Modo de experimento `--sin-pi`:** el servidor no espera entre tiles y responde `CTRL|R:0`. No cambia el protocolo; sirve para medir con y sin control con el mismo código.
+
+### D-42 · Filtros de Bloom: cuándo se envían, qué incluyen y re-declaración · 2026-10-06 · Vigente
+- **Envío periódico:** cada 1 s si la caché cambió, contando también los tiles **nuevos** y no solo las expulsiones (§13.5 decía solo expulsiones). Sin esto, si el cliente nunca expulsa, `enviadosRecientes` crece sin límite durante toda la sesión. Costo: 684 caracteres por segundo mientras se navega, frente a ~30 KB de un tile.
+- **Antes de un VIEWPORT** solo se envía si hubo expulsiones: el servidor debe saber que un tile expulsado ya no está antes de calcular una vista donde vuelve a ser visible.
+- **Qué incluye:** los tiles en caché **más** los recibidos que todavía se decodifican; si no, el servidor reenviaría tiles que ya están en camino al lienzo. `MAX` es el último `NUM` recibido: todo lo anterior ya está en uno de esos dos lugares.
+- **Sin `GET_TILE`:** un tile con CRC incorrecto no se guarda; lo reconstruye FEC o vuelve por el filtro o la re-declaración (§15). Se retiran `GET_TILE` y `EVICT` (ideas no permitidas).
+- **Servidor:** `enviadosRecientes` es un `LinkedHashMap` en orden de `NUM`; al recibir `BLOOM` se borra desde el principio hasta el primer `NUM > MAX`. Un reenvío se saca y se vuelve a insertar para conservar el orden.
+- **Re-declaración:** 250 ms después del `DONE` de la vista vigente, si faltan tiles en pantalla y no hay nada decodificándose, se envían `BLOOM` y el mismo `VIEWPORT` con `SEQ` nuevo. Máximo 3 intentos por vista; el tercero con `SEM + 1` (posible falso positivo, §13.7). El contador se reinicia cuando el usuario se mueve.

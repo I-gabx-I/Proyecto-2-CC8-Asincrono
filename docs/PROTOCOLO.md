@@ -273,14 +273,14 @@ El valor empieza tras el **primer** `:`. Clave repetida → `400`. Orden libre. 
 | Comando | Dir. | Campos | Estado requerido | Respuesta | Estado |
 |---|---|---|---|---|---|
 | `HELLO` | C→S | `V` (=2), `CACHE` (1–1 000 000) | `CONNECTED` | `HELLO_OK` o `ERROR` | ✅ |
-| `HELLO_OK` | S→C | `V`, `HB` (s), `TS` (px), `BM` (bits del filtro), `BK` (hashes), `RPT` (ms entre reportes) | — | — | 🔁 |
+| `HELLO_OK` | S→C | `V`, `HB` (s), `TS` (px), `BM` (bits del filtro), `BK` (hashes), `RPT` (ms entre reportes) | — | — | ✅ |
 | `LIST` | C→S | — | `READY`, `IMAGE_OPEN` | `LIST_RESP` | ✅ |
 | `LIST_RESP` | S→C | `IMGS` = `id,ESTADO,PROGRESO;…` | — | — | 🟨 solo `READY,100` |
 | `OPEN` | C→S | `IMG` | `READY`, `IMAGE_OPEN` | `META` o `ERROR` | ✅ |
-| `RESUME` | C→S | `IMG`, `SEM`, `BITS` | `READY` | `META` o `ERROR` | 📝 |
-| `META` | S→C | `IMG`, `W`, `H`, `TS`, `L`, `FMT`, `RES` (0 = nueva, 1 = reanudada) | — | — | 🔁 |
-| `VIEWPORT` | C→S | `SEQ`, `Z`, `X`, `Y`, `VW`, `VH` | `IMAGE_OPEN` | tiles, paridades y `DONE` | 🔁 |
-| `BLOOM` | C→S | `MAX`, `SEM`, `BITS` | `IMAGE_OPEN` | ninguna | 📝 |
+| `RESUME` | C→S | `IMG`, `SEM`, `BITS` | `READY` | `META` o `ERROR` | ✅ |
+| `META` | S→C | `IMG`, `W`, `H`, `TS`, `L`, `FMT`, `RES` (0 = nueva, 1 = reanudada) | — | — | ✅ |
+| `VIEWPORT` | C→S | `SEQ`, `Z`, `X`, `Y`, `VW`, `VH` | `IMAGE_OPEN` | tiles, paridades y `DONE` | ✅ |
+| `BLOOM` | C→S | `MAX`, `SEM`, `BITS` | `IMAGE_OPEN` | ninguna | ✅ |
 | `REPORT` | C→S | `MAX`, `PERD`, `COLA`, `DEC`, `JIT`, `REC` | `IMAGE_OPEN` | `CTRL` | ✅ |
 | `CTRL` | S→C | `R`, `Q`, `E`, `TARDE` | — | — | ✅ |
 | `CANCEL` | C→S | `SEQ` | `IMAGE_OPEN` | ninguna | ✅ |
@@ -400,7 +400,7 @@ Si alguna falla, el mensaje se descarta (y cuenta como pérdida para FEC):
 
 ---
 
-## 9. Máquina de estados de la sesión ✅ (🔁 `RESUME`)
+## 9. Máquina de estados de la sesión ✅
 
 ```mermaid
 stateDiagram-v2
@@ -421,7 +421,7 @@ Comando en estado no permitido → `ERROR|CODE:412` **sin cerrar**. Al cerrar, e
 
 ## 10. Arquitectura del envío: cómo encajan los cuatro mecanismos
 
-### 10.1 Tubería de envío 📝
+### 10.1 Tubería de envío ✅
 
 ```
                     ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -460,15 +460,15 @@ Cada mecanismo responde una sola pregunta y no conoce a los demás: el filtro de
 
 ```
 src/pimg/
-├── transporte/              🟨 lógica pura, sin sockets ni archivos (probable por separado)
+├── transporte/              ✅ lógica pura, sin sockets ni archivos (probable por separado)
 │   ├── FecXor.java           armado de grupos entrelazados y cálculo de la paridad ✅
 │   ├── ControladorPI.java    tasa R a partir de los reportes ✅
-│   ├── FiltroBloom.java      estructura y hashes (idénticos a los de JS, §13.3)
+│   ├── FiltroBloom.java      estructura y hashes (idénticos a los de JS, §13.3) ✅
 │   ├── PlanificadorEDF.java  cola por plazos ✅
 │   └── RedSimulada.java      pérdida, ancho de banda y latencia artificiales ✅
 └── protocol/SesionPimg.java  orquesta: usa transporte/, tiles/ y websocket/
     protocol/Enlace.java       ✅ hilo y cola FIFO de 4 MB que aplican la red simulada sobre el socket
-web/js/transporte/            🟨 fec.js ✅, bloom.js 📝, reportes.js ✅
+web/js/transporte/            ✅ fec.js, bloom.js, reportes.js
 ```
 
 Dependencias: `protocol → transporte`; `transporte` no depende de nada del proyecto.
@@ -674,7 +674,7 @@ Sin control, `TARDE` es bajo porque el servidor saca todo de inmediato y no ve l
 
 ---
 
-## 13. Mecanismo 3 — Sincronización de caché con filtros de Bloom 📝
+## 13. Mecanismo 3 — Sincronización de caché con filtros de Bloom ✅
 
 ### 13.1 Problema
 
@@ -788,6 +788,14 @@ Un falso positivo hace que el servidor crea que el cliente tiene un tile que no 
 
 **Referencias:** Bloom (1970); Fan, Cao, Almeida y Broder (2000), *Summary Cache*; Kirsch y Mitzenmacher (2006), doble hashing.
 
+### 13.10 Resultados medidos
+
+- **Contrato Java = JavaScript:** los 6 vectores de §13.3 y la huella SHA-256 `d6a5e4617c624c5e` coinciden en `ProbarBloom` (Java) y en la consola del navegador (`bloom.js`).
+- **Falsos positivos con 300 tiles:** 367 de 200 000 consultas = **0.184 %** (teórico 0.17 %); ningún falso negativo.
+- **`RESUME`:** tras reiniciar el servidor, el cliente reanudó con un filtro de 1148 bits en 1 y la vista visible respondió `0 nuevos (20 ya los tiene)`: no se reenvió nada.
+- **Pérdidas que FEC no recupera:** con 20 % de pérdida, 36 mensajes perdidos, 4 recuperados por FEC y el resto reenviados al siguiente `VIEWPORT` porque el filtro ya no los incluía (`BLOOM max=348 … → VIEWPORT … 1 nuevos`). `Faltan en pantalla` = 0.
+- **Expulsiones:** 179 con la caché llena (300/300), sin huecos permanentes y sin `EVICT`.
+
 ---
 
 ## 14. Mecanismo 4 — Planificación por plazos (EDF) ✅
@@ -840,7 +848,7 @@ Con una sola vista y sin paridades, EDF produce **el mismo orden del centro haci
 
 ---
 
-## 15. Recuperación de una pérdida: el camino completo 📝
+## 15. Recuperación de una pérdida: el camino completo ✅
 
 ```
 Tile perdido o con CRC incorrecto
@@ -870,6 +878,8 @@ Se reconstruye con la paridad       Queda faltante en pantalla (el usuario ve
 **La re-declaración no es un NACK:** el cliente nunca dice "me falta el tile X". Vuelve a declarar su **estado** (qué tiene) y su **vista** (qué ve), y el servidor decide qué enviar con las mismas reglas de siempre. Es el mismo principio de §13: sincronizar estado completo en vez de reportar eventos de pérdida.
 
 Intervalo mínimo entre re-declaraciones: 200 ms.
+
+**Implementación:** 250 ms después del DONE de la vista vigente y solo si no hay tiles decodificándose (D-42).
 
 ---
 
@@ -910,9 +920,9 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 
 `pimg.tiles.TileCache`: bytes codificados de cada tile, **compartida por todas las sesiones**, límite **128 MB en bytes**. LRU actual (`LinkedHashMap` en orden de acceso); lectura de disco fuera del lock; imprime aciertos y fallos. Plan: ARC (Megiddo y Modha, 2003), adaptado a límite en bytes, con LRU como opción para comparar. En v2, la caché también sirve los datos que necesita el cálculo de cada paridad.
 
-### 17.2 Cliente ✅ (🔁 sin `EVICT`)
+### 17.2 Cliente ✅
 
-`web/js/cache.js`: `ImageBitmap` decodificados, límite **300 tiles** (~75 MB). LRU actual. Al expulsar: `bitmap.close()` (libera memoria de inmediato) y la caché queda marcada como **modificada**, lo que provoca el envío de un nuevo `BLOOM` (§13.5). El filtro de Bloom es, literalmente, el **resumen de esta caché**.
+`web/js/cache.js`: `ImageBitmap` decodificados, límite **300 tiles** (~75 MB). LRU actual. Al expulsar: `bitmap.close()` (libera memoria de inmediato) y la caché queda marcada como **modificada**; también la marca la llegada de un tile nuevo (D-42). Esa marca provoca el envío de un nuevo `BLOOM` (§13.5): cada 1 s, y antes de un `VIEWPORT` si hubo expulsiones. El filtro de Bloom es, literalmente, el **resumen de esta caché**.
 
 ---
 
@@ -929,10 +939,10 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 - ✅ **Recepción v2:** valida la cabecera de 28 bytes y `NUM`; cuenta saltos en `PERD`.
 - ✅ **FEC en el cliente:** conserva los últimos 32 tiles y reconstruye con las paridades (§11.5).
 - ✅ **Reportes:** `REPORT` cada 100 ms (§12.2).
-- 📝 **Filtro:** construye y envía `BLOOM` según §13.5.
-- 📝 **Re-declaración de vista** según §15.
-- ✅ **Reconexión:** backoff exponencial 1, 2, 4… máx. 30 s; 📝 conserva la caché y usa `RESUME`.
-- **Panel de depuración:** conexión, imagen, nivel, zoom, `SEQ`, tiles y MB en memoria, faltantes, bytes recibidos, % respecto al original. ✅ `NUM`, perdidos, gráficas de `R` y `Q` en el tiempo y controles de red simulada y cliente lento. 📝 Además: `REC`, `TARDE`, re-declaraciones.
+- ✅ **Filtro:** construye y envía `BLOOM` según §13.5.
+- ✅ **Re-declaración de vista** según §15.
+- ✅ **Reconexión:** backoff exponencial 1, 2, 4… máx. 30 s; ✅ conserva la caché y usa `RESUME`.
+- **Panel de depuración:** conexión, imagen, nivel, zoom, `SEQ`, tiles y MB en memoria, faltantes, bytes recibidos, % respecto al original. ✅ `NUM`, perdidos, gráficas de `R` y `Q` en el tiempo y controles de red simulada y cliente lento.
 
 ---
 
@@ -1119,7 +1129,7 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 | FEC con 1 %, 5 % y 10 % de pérdida | % de pérdidas recuperadas por FEC; re-declaraciones necesarias; bytes extra. **5 %, primera medición:** 2/2 recuperados; costo medido 30.4 % sobre los protegidos |
 | PI con escalón de ancho de banda | Sobrepico de `Q`, tiempo de establecimiento, error estacionario. **Medido:** sobrepico Q = 24 (simulado 55.9), establecimiento ~7 s (simulado 7.8 s) |
 | PI sin control (tasa fija) vs con PI | Tiles desperdiciados al cancelar una vista; espera del tile visible. **Sin PI, medido:** > 10 s con 300 KB/s (peor caso calculado 14 s). **Medido:** 20 s → 7 s; Q máximo 96 → 24 |
-| Bloom | Bytes de sincronización vs v1 (`EVICT`); falsos positivos observados; tiles no reenviados con `RESUME` |
+| Bloom | Bytes de sincronización vs v1 (`EVICT`); falsos positivos observados; tiles no reenviados con `RESUME`. **Medido:** 0.184 % de falsos positivos; RESUME sin reenvíos (20/20 tiles conservados) |
 | EDF | % de plazos incumplidos según el ancho de banda |
 | Global | Bytes recibidos vs tamaño de la imagen al navegar 5 min en la imagen de 93 GB |
 
@@ -1136,7 +1146,7 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 | Alta | Red simulada + controles en el panel | ✅ |
 | Alta | FEC (servidor y cliente) | ✅ |
 | Alta | `REPORT` + controlador PI + `CTRL` + gráficas | ✅ |
-| Alta | Bloom + `RESUME` + re-declaración (retira `EVICT` y `GET_TILE`) | 📝 |
+| Alta | Bloom + `RESUME` + re-declaración (retira `EVICT` y `GET_TILE`) | ✅ |
 | Media | ARC en servidor (LRU como opción) | 📝 |
 | Media | Ingesta automática (`WatchService`, `PROCESSING` con %) | 📝 |
 | Media | Coordenadas bajo el cursor e "ir a x, y" | 📝 |

@@ -36,7 +36,7 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 | 5 | Red simulada + controles en el panel | `feat/red-simulada` | ✅ |
 | 6 | FEC con paridad XOR entrelazada | `feat/fec` | ✅ |
 | 7 | Controlador PI (`REPORT`, `CTRL`, gráficas) | `feat/control-pi` | ✅ |
-| 8 | Filtros de Bloom, `RESUME` y re-declaración de vista | `feat/bloom-resume` | ⬜ |
+| 8 | Filtros de Bloom, `RESUME` y re-declaración de vista | `feat/bloom-resume` | ✅ |
 | 9 | ARC, ingesta automática y navegación ("ir a x, y") | `feat/extras` | ⬜ |
 | 10 | Pruebas finales con las 4 imágenes de evaluación | `test/evaluacion` | ⬜ |
 | 11 | Documento final y preparación de la defensa | `docs/final` | ⬜ |
@@ -240,17 +240,29 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 
 ---
 
-## Fase 8 — Filtros de Bloom y reanudación ⬜
+## Fase 8 — Filtros de Bloom y reanudación ✅
 
 **Referencia:** `PROTOCOLO.md` §13, §15.
 
-- [ ] `FiltroBloom` (Java) y `bloom.js`: coinciden con los vectores de prueba de §13.3
-- [ ] Comando `BLOOM`; lógica `tiene(t)` con `enviadosRecientes`
-- [ ] `RESUME` tras reconectar
-- [ ] Re-declaración de vista y cambio de semilla
-- [ ] Retirar `GET_TILE` y `EVICT`
+- [x] `FiltroBloom` (Java) y `bloom.js`: coinciden con los vectores de prueba de §13.3
+- [x] Comando `BLOOM`; lógica `tiene(t)` con `enviadosRecientes`
+- [x] `RESUME` tras reconectar
+- [x] Re-declaración de vista y cambio de semilla
+- [x] Retirar `GET_TILE` y `EVICT`
 
 **Criterio:** tras reiniciar el servidor, el cliente reanuda sin que se reenvíen los tiles que conserva.
+
+**Evidencia:**
+
+| Prueba | Resultado |
+|---|---|
+| `ProbarBloom` | 6 vectores de §13.3, 21 bits y SHA-256 `d6a5e4617c624c5e`; 0.184 % de falsos positivos con 300 tiles; sin falsos negativos |
+| `bloom.js` en el navegador | Mismas posiciones que Java (vectores de §13.3) |
+| Reinicio del servidor (`RESUME`) | Filtro de 1148 bits; vista visible: `0 nuevos (20 ya los tiene)` |
+| Pérdida 20 % | 36 perdidos: 4 por FEC y el resto reenviados por el filtro; `Faltan en pantalla` 0 |
+| Expulsiones | 179 con la caché llena, sin huecos permanentes |
+| Re-declaración (pérdida 50 %, vista quieta) | **PENDIENTE: anotar el número de re-declaraciones observado** (panel: "Re-declaraciones de vista"); los huecos se llenan solos |
+| `GET_TILE` / `EVICT` | Retirados: el servidor responde `400 Comando desconocido` |
 
 ---
 

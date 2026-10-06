@@ -27,17 +27,18 @@ src/pimg/
 │                        HttpResponse, StaticFileHandler (anti path traversal), Router, RequestHandler, Conexion
 ├── websocket/           WebSocketHandler (handshake, heartbeat), WebSocketConnection (frames, ReentrantLock),
 │                        WebSocketListener (una instancia por conexión), WebSocketException, EchoListener (prueba, sin uso)
-├── protocol/            SesionPimg (máquina de estados, cola cancelable, hilo emisor), Mensaje (texto),
-│                        TileFrame (binario 24 B + CRC32), Vista (tiles visibles), PimgException
+├── protocol/            SesionPimg (máquina de estados, cola EDF, emisor con pacing PI, FEC, estado de la caché
+│                        por Bloom), Enlace (salida directa o red simulada), Mensaje, TileFrame (binario 28 B +
+│                        CRC32, TILE y PARIDAD), Vista (tiles visibles y distancia), PimgException
 ├── tiles/               PyramidLayout (matemática, compartida), TileStore (formato en disco),
 │                        Catalogo (lee meta.json), TileCache (LRU compartida en bytes)
 └── ingest/              IngestMain, ImageSource (interfaz), ImageIOSource, PyramidBuilder (cascada),
                          Reductor (2x2), TileEncoderPool (hilos de plataforma + backpressure), Franja
-web/js/                  app.js (composición), pimg.js (protocolo), visor.js (cámara continua, relleno con
-                         ancestros, fundido), cache.js (LRU con close), crc32.js, panel.js
+web/js/                  app.js (composición, re-declaración de vista), pimg.js (protocolo), visor.js (cámara
+                         continua, relleno con ancestros, fundido), cache.js (LRU con close), crc32.js, panel.js,
+                         grafica.js (R y Q del PI)
 
-v2 (por implementar, ver docs/PROTOCOLO.md §10.3):
-src/pimg/transporte/     FecXor, ControladorPI, FiltroBloom, PlanificadorEDF, RedSimulada (lógica pura, sin sockets)
+src/pimg/transporte/     Lógica pura, sin sockets: PlanificadorEDF, RedSimulada, FecXor, ControladorPI, FiltroBloom
 web/js/transporte/       fec.js, bloom.js, reportes.js
 ```
 
@@ -48,6 +49,9 @@ web/js/transporte/       fec.js, bloom.js, reportes.js
 ```powershell
 .\build.bat                                    # javac --release 21 -encoding UTF-8 --source-path src (Main + IngestMain)
 .\run.bat                                      # java -Xmx512m -cp out pimg.Main 8080
+.\run.bat --sim                                # red simulada: pérdida, ancho de banda y latencia desde el panel
+.\run.bat --sim --sin-pi                       # experimento: sin control de ritmo (comparación con PI)
+java -cp "out;tools\out" ProbarEDF             # también ProbarRed, ProbarFec, ProbarPI, ProbarBloom
 .\ingest.bat data\input\<archivo> <id>         # pirámide en data/tiles/<id>/
 .\ingest.bat --plan <ancho> <alto>             # solo calcula niveles y tiles
 java -cp tools\out PngInfo "<ruta.png>"        # cabecera de un PNG
@@ -78,17 +82,17 @@ En PowerShell: los `.bat` se ejecutan con `.\`, y curl es `curl.exe` (`curl` es 
 
 ## 7. Estado y próximos pasos
 
-Funcional y probado: ingesta en cascada, HTTP/WebSocket propios, PIMG v1, cliente con zoom continuo, cachés LRU, cancelación. La especificación de `pimg.v2` está en `docs/PROTOCOLO.md` (§0 resume qué cambió). Orden de trabajo, una rama por fase:
+Funcional y probado (fases 1 a 8, todas en `main`): ingesta en cascada, HTTP/WebSocket propios, `pimg.v2` completo (EDF, red simulada, FEC, controlador PI, filtros de Bloom con `RESUME` y re-declaración de vista), cliente con zoom continuo, cachés LRU, cancelación. La especificación está en `docs/PROTOCOLO.md` (§0 resume qué cambió). Orden de trabajo, una rama por fase:
 
-1. `feat/png-source`: `PngSource` en streaming y prueba con la imagen de 93 GB en la PC de escritorio (1 TB).
-2. `feat/almacen-empaquetado`: un archivo por nivel + índice; ingesta reanudable (~635 000 tiles).
-3. `feat/legibilidad`: tiles PNG sin pérdida en niveles altos + zoom > 1:1 sin suavizado.
-4. `feat/edf`: cabecera v2 con `NUM` + cola por plazos (§8, §14).
-5. `feat/red-simulada`: pérdida, ancho de banda y latencia; controles en el panel (§16).
-6. `feat/fec`: paridad XOR entrelazada (§11).
-7. `feat/control-pi`: `REPORT`, controlador PI, `CTRL` y gráficas (§12).
-8. `feat/bloom-resume`: filtro de Bloom, `RESUME` y re-declaración de vista; retirar `EVICT` y `GET_TILE` (§13, §15).
-9. ARC en el servidor, ingesta automática (`WatchService`), coordenadas / "ir a x, y".
+1. ✅ `feat/png-source`: `PngSource` en streaming y prueba con la imagen de 93 GB en la PC de escritorio (1 TB).
+2. ✅ `feat/almacen-empaquetado`: un archivo por nivel + índice; ingesta reanudable (~635 000 tiles).
+3. ✅ `feat/legibilidad`: tiles PNG sin pérdida en niveles altos + zoom > 1:1 sin suavizado.
+4. ✅ `feat/edf`: cabecera v2 con `NUM` + cola por plazos (§8, §14).
+5. ✅ `feat/red-simulada`: pérdida, ancho de banda y latencia; controles en el panel (§16).
+6. ✅ `feat/fec`: paridad XOR entrelazada (§11).
+7. ✅ `feat/control-pi`: `REPORT`, controlador PI, `CTRL` y gráficas (§12).
+8. ✅ `feat/bloom-resume`: filtro de Bloom, `RESUME` y re-declaración de vista; retirado `EVICT` y `GET_TILE` (§13, §15).
+9. **Siguiente:** ARC en el servidor, ingesta automática (`WatchService`), coordenadas / "ir a x, y".
 10. Pruebas finales con JDK 21 sin internet y documento final estilo RFC 9293.
 
 ## 8. Cómo colaborar con el equipo
