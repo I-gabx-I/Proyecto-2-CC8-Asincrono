@@ -286,7 +286,7 @@ El valor empieza tras el **primer** `:`. Clave repetida → `400`. Orden libre. 
 | `CANCEL` | C→S | `SEQ` | `IMAGE_OPEN` | ninguna | ✅ |
 | `SIM` | C→S | `PERD`, `BW`, `LAT` | `READY`, `IMAGE_OPEN` | `SIM_OK` o `ERROR 403` | ✅ |
 | `SIM_OK` | S→C | `PERD`, `BW`, `LAT` (valores aplicados) | — | — | ✅ |
-| `DONE` | S→C | `SEQ`, `SENT`, `PAR` | — | — | 🔁 |
+| `DONE` | S→C | `SEQ`, `SENT`, `PAR` | — | — | ✅ |
 | `ERROR` | S→C | `CODE`, `MSG` | — | — | ✅ |
 | ~~`GET_TILE`~~ | — | **Eliminado en v2** (§0.2) | — | — | ❌ |
 | ~~`EVICT`~~ | — | **Eliminado en v2**, reemplazado por `BLOOM` | — | — | ❌ |
@@ -361,7 +361,7 @@ Todo mensaje binario empieza con la misma **cabecera común de 10 bytes**:
 
 **Cambio respecto a v1:** se insertó `NUM` en los bytes 6–9, así que todo lo demás se corre 4 bytes (cabecera de 24 → 28).
 
-### 8.2 PARIDAD (`TIPO = 0x02`) — 19 + 18·K bytes + datos 📝
+### 8.2 PARIDAD (`TIPO = 0x02`) — 19 + 18·K bytes + datos ✅
 
 ```
  Cabecera común (10 B) │ K (1 B) │ K entradas de 18 B │ LONG_P (4 B) │ CRC_P (4 B) │ DATOS_P (LONG_P B)
@@ -461,14 +461,14 @@ Cada mecanismo responde una sola pregunta y no conoce a los demás: el filtro de
 ```
 src/pimg/
 ├── transporte/              🟨 lógica pura, sin sockets ni archivos (probable por separado)
-│   ├── FecXor.java           armado de grupos entrelazados y cálculo de la paridad
+│   ├── FecXor.java           armado de grupos entrelazados y cálculo de la paridad ✅
 │   ├── ControladorPI.java    tasa R a partir de los reportes
 │   ├── FiltroBloom.java      estructura y hashes (idénticos a los de JS, §13.3)
 │   ├── PlanificadorEDF.java  cola por plazos ✅
 │   └── RedSimulada.java      pérdida, ancho de banda y latencia artificiales ✅
 └── protocol/SesionPimg.java  orquesta: usa transporte/, tiles/ y websocket/
     protocol/Enlace.java       ✅ hilo y cola FIFO de 4 MB que aplican la red simulada sobre el socket
-web/js/transporte/            📝 fec.js, bloom.js, reportes.js
+web/js/transporte/            🟨 fec.js ✅, bloom.js 📝, reportes.js 📝
 ```
 
 Dependencias: `protocol → transporte`; `transporte` no depende de nada del proyecto.
@@ -479,7 +479,7 @@ Por conexión: un hilo virtual **lector** (atiende los mensajes del cliente), un
 
 ---
 
-## 11. Mecanismo 1 — FEC con paridad XOR entrelazada 📝
+## 11. Mecanismo 1 — FEC con paridad XOR entrelazada ✅
 
 ### 11.1 Problema
 
@@ -539,6 +539,8 @@ si faltantes ≥ 2:   no recuperable por FEC → camino de §15
 | Extra sobre una vista de ~40 tiles con 16 protegidos | 4 paridades ≈ **10 %** |
 | Pérdidas recuperables | 1 por grupo; ráfagas de hasta G = 4 mensajes |
 | Retardo para recuperar | Hasta que llega la paridad: a lo sumo 4 mensajes después del tile perdido, sin ida y vuelta |
+
+**Medido.** `ProbarFec`: 16 tiles de 20–40 KB generan 156 736 bytes de paridad sobre 515 818 protegidos = **30.4 %**. Es el 25 % teórico más el relleno con ceros cuando los miembros miden distinto. En el navegador, con 5 % de pérdida simulada sobre la imagen de 1 GB: 2 mensajes perdidos, **2 recuperados por FEC**, 0 irrecuperables. Las cuentas cuadran: `NUM` = tiles + paridades + perdidos (178 + 25 + 2 = 205).
 
 ### 11.7 Ventajas, desventajas y mitigación
 
@@ -898,7 +900,7 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 - ✅ **Refinamiento progresivo:** mientras falta un tile se dibuja su ancestro más cercano en caché, ampliado. Así una pérdida nunca deja un hueco vacío.
 - ✅ **Fundido** de 150 ms; **throttling** de un `VIEWPORT` cada 100 ms; decodificación asíncrona con época.
 - ✅ **Recepción v2:** valida la cabecera de 28 bytes y `NUM`; cuenta saltos en `PERD`.
-- 📝 **FEC en el cliente:** conserva los últimos 32 tiles y reconstruye con las paridades (§11.5).
+- ✅ **FEC en el cliente:** conserva los últimos 32 tiles y reconstruye con las paridades (§11.5).
 - 📝 **Reportes:** `REPORT` cada 100 ms (§12.2).
 - 📝 **Filtro:** construye y envía `BLOOM` según §13.5.
 - 📝 **Re-declaración de vista** según §15.
@@ -1087,7 +1089,7 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 
 | Experimento | Métrica |
 |---|---|
-| FEC con 1 %, 5 % y 10 % de pérdida | % de pérdidas recuperadas por FEC; re-declaraciones necesarias; bytes extra |
+| FEC con 1 %, 5 % y 10 % de pérdida | % de pérdidas recuperadas por FEC; re-declaraciones necesarias; bytes extra. **5 %, primera medición:** 2/2 recuperados; costo medido 30.4 % sobre los protegidos |
 | PI con escalón de ancho de banda | Sobrepico de `Q`, tiempo de establecimiento, error estacionario |
 | PI sin control (tasa fija) vs con PI | Tiles desperdiciados al cancelar una vista; espera del tile visible. **Sin PI, medido:** > 10 s con 300 KB/s (peor caso calculado 14 s) |
 | Bloom | Bytes de sincronización vs v1 (`EVICT`); falsos positivos observados; tiles no reenviados con `RESUME` |
@@ -1105,7 +1107,7 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 | Alta | Tiles PNG en niveles altos + zoom > 1:1 sin suavizado | ✅ |
 | Alta | Cabecera v2 (`NUM`) + EDF | ✅ |
 | Alta | Red simulada + controles en el panel | ✅ |
-| Alta | FEC (servidor y cliente) | 📝 |
+| Alta | FEC (servidor y cliente) | ✅ |
 | Alta | `REPORT` + controlador PI + `CTRL` + gráficas | 📝 |
 | Alta | Bloom + `RESUME` + re-declaración (retira `EVICT` y `GET_TILE`) | 📝 |
 | Media | ARC en servidor (LRU como opción) | 📝 |

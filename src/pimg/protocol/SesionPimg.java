@@ -3,12 +3,14 @@ package pimg.protocol;
 import pimg.tiles.Catalogo;
 import pimg.tiles.PyramidLayout;
 import pimg.tiles.TileCache;
+import pimg.transporte.FecXor;
 import pimg.transporte.PlanificadorEDF;
 import pimg.websocket.WebSocketConnection;
 import pimg.websocket.WebSocketListener;
 
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,14 +20,17 @@ import java.util.concurrent.locks.ReentrantLock;
 /** Sesión PIMG de UN cliente: máquina de estados, tiles enviados y cola de envío con cancelación. */
 public final class SesionPimg implements WebSocketListener {
     private enum Estado { CONNECTED, READY, IMAGE_OPEN, CLOSED }
-    private enum Tipo { TILE, DONE }
+    private enum Tipo { TILE, PARIDAD, DONE }
 
-    /** Algo pendiente de enviar: un tile, o el DONE que cierra un VIEWPORT. Solo coordenadas, no bytes. */
-    private record Pedido(Tipo tipo, Catalogo.Imagen img, long seq, int z, int x, int y) {}
+    /**
+     * Algo pendiente de enviar: un tile, una paridad o el DONE que cierra un VIEWPORT. Solo coordenadas,
+     * no bytes. grupo = miembros de una PARIDAD (null en TILE y DONE).
+     */
+    private record Pedido(Tipo tipo, Catalogo.Imagen img, long seq, int z, int x, int y, List<Vista.Tile> grupo) {}
 
     private static final int VERSION = 2;
     private static final long MAX_SEQ = 0xFFFF_FFFFL;  // SEQ es uint32
-    private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 DONE: cabe la vista máxima
+    private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 4 paridades + 1 DONE = 294
 
     private static final long VISTA_MAX = 4096;        // px: impide pedir un nivel entero de golpe
 
@@ -189,6 +194,9 @@ public final class SesionPimg implements WebSocketListener {
 
         List<Vista.Tile> visibles = Vista.tilesVisibles(p, z, x, y, vw, vh);
         int nuevos = 0;
+        int paridades = 0;
+        List<Vista.Tile> protegidos = new ArrayList<>();   // FEC: los primeros nuevos, en orden de prioridad
+        List<Long> plazosProtegidos = new ArrayList<>();
         lockCola.lock();
         try {
             seqVigente = seq;
@@ -197,21 +205,36 @@ public final class SesionPimg implements WebSocketListener {
                 if (enviados.contains(t.clave())) {
                     continue;                      // el cliente ya lo tiene
                 }
-                if (nuevos == COLA_MAX - 1) {
+                if (nuevos == COLA_MAX - 5) {      // deja lugar a 4 paridades y al DONE
                     break;                         // vista enorme: se quedan los del centro
                 }
                 double dist = Vista.distancia(p.tile(), t, x, y, vw, vh);
-                cola.agregar(new Pedido(Tipo.TILE, img, seq, t.z(), t.x(), t.y()),
-                        PlanificadorEDF.plazoTile(t0, dist));
+                long plazo = PlanificadorEDF.plazoTile(t0, dist);
+                cola.agregar(new Pedido(Tipo.TILE, img, seq, t.z(), t.x(), t.y(), null), plazo);
+                if (protegidos.size() < FecXor.PROTEGIDOS) {
+                    protegidos.add(t);
+                    plazosProtegidos.add(plazo);
+                }
                 nuevos++;
             }
-            cola.agregar(new Pedido(Tipo.DONE, img, seq, 0, 0, 0), PlanificadorEDF.SIN_PLAZO);
+            // FEC (§11.3 y §11.4): una PARIDAD por grupo entrelazado. Los plazos crecen con el rango,
+            // así que el último miembro tiene el mayor: la paridad sale justo después de él.
+            for (int[] rangos : FecXor.grupos(protegidos.size())) {
+                List<Vista.Tile> grupo = new ArrayList<>();
+                for (int r : rangos) {
+                    grupo.add(protegidos.get(r));
+                }
+                long plazo = plazosProtegidos.get(rangos[rangos.length - 1]) + 1_000_000L;
+                cola.agregar(new Pedido(Tipo.PARIDAD, img, seq, 0, 0, 0, grupo), plazo);
+                paridades++;
+            }
+            cola.agregar(new Pedido(Tipo.DONE, img, seq, 0, 0, 0, null), PlanificadorEDF.SIN_PLAZO);
             hayTrabajo.signal();
         } finally {
             lockCola.unlock();
         }
-        log(String.format("VIEWPORT seq=%d z=%d -> %d visibles, %d nuevos (%d ya enviados)",
-                seq, z, visibles.size(), nuevos, visibles.size() - nuevos));
+        log(String.format("VIEWPORT seq=%d z=%d -> %d visibles, %d nuevos (%d ya enviados), %d paridades",
+                seq, z, visibles.size(), nuevos, visibles.size() - nuevos, paridades));
     }
 
     private void getTile(Mensaje m) throws PimgException {
@@ -229,7 +252,7 @@ public final class SesionPimg implements WebSocketListener {
                 return;                            // cola llena: se ignora (GET_TILE se retira en la Fase 8)
             }
             // Reenvío urgente: plazo como el de un tile en el centro de la vista
-            cola.agregar(new Pedido(Tipo.TILE, img, seq, z, x, y), PlanificadorEDF.plazoTile(System.nanoTime(), 0));
+            cola.agregar(new Pedido(Tipo.TILE, img, seq, z, x, y, null), PlanificadorEDF.plazoTile(System.nanoTime(), 0));
             hayTrabajo.signal();
         } finally {
             lockCola.unlock();
@@ -283,6 +306,7 @@ public final class SesionPimg implements WebSocketListener {
         long seqContado = -1;
         int enviadosEnSeq = 0;
         int tardeEnSeq = 0;
+        int paridadesEnSeq = 0;
         try {
             while (true) {
                 PlanificadorEDF.Turno<Pedido> turno;
@@ -304,14 +328,22 @@ public final class SesionPimg implements WebSocketListener {
                     seqContado = p.seq();
                     enviadosEnSeq = 0;
                     tardeEnSeq = 0;
+                    paridadesEnSeq = 0;
                 }
                 if (p.tipo() == Tipo.DONE) {
-                    enviar(Mensaje.de("DONE").con("SEQ", p.seq()).con("SENT", enviadosEnSeq));
-                    log(String.format("DONE seq=%d SENT=%d TARDE=%d | sesion: %d de %d tarde (%.1f %%)%s | %s",
-                            p.seq(), enviadosEnSeq, tardeEnSeq, tardesTotal, atendidosTotal,
+                    enviar(Mensaje.de("DONE").con("SEQ", p.seq()).con("SENT", enviadosEnSeq).con("PAR", paridadesEnSeq));
+                    log(String.format("DONE seq=%d SENT=%d PAR=%d TARDE=%d | sesion: %d de %d tarde (%.1f %%)%s | %s",
+                            p.seq(), enviadosEnSeq, paridadesEnSeq, tardeEnSeq, tardesTotal, atendidosTotal,
                             atendidosTotal == 0 ? 0.0 : 100.0 * tardesTotal / atendidosTotal,
                             enlace.simulado() ? ", perdidos en el enlace: " + enlace.descartados() : "",
                             cache.estadisticas()));
+                } else if (p.tipo() == Tipo.PARIDAD) {
+                    if (enviarParidad(p)) {
+                        paridadesEnSeq++;
+                        if (turno.tarde()) {
+                            tardeEnSeq++;
+                        }
+                    }
                 } else if (enviarTile(p)) {
                     enviadosEnSeq++;
                     if (turno.tarde()) {
@@ -339,6 +371,28 @@ public final class SesionPimg implements WebSocketListener {
         if (img == imagen) {
             enviados.add(new Vista.Tile(p.z(), p.x(), p.y()).clave()); // se marca AL ENVIAR, no al encolar
         }
+        return true;
+    }
+
+    /** PARIDAD (§11.4): el XOR se calcula al enviarla, con los datos de sus miembros desde la caché. */
+    private boolean enviarParidad(Pedido p) throws IOException {
+        Catalogo.Imagen img = p.img();
+        byte formato = img.formato().equals("PNG") ? TileFrame.FMT_PNG : TileFrame.FMT_JPEG;
+        List<TileFrame.Miembro> miembros = new ArrayList<>();
+        List<byte[]> datos = new ArrayList<>();
+        for (Vista.Tile t : p.grupo()) {
+            try {
+                byte[] d = cache.obtener(img.id(), img.almacen(), t.z(), t.x(), t.y());
+                miembros.add(new TileFrame.Miembro(t.z(), t.x(), t.y(), formato, d));
+                datos.add(d);
+            } catch (NoSuchFileException e) {
+                // §11.4: un miembro que no se pudo leer se excluye de la paridad
+            }
+        }
+        if (miembros.size() < 2) {
+            return false;                          // con un solo miembro sería una copia
+        }
+        enlace.enviarBinario(TileFrame.construirParidad(p.seq(), ++num, miembros, FecXor.paridad(datos)));
         return true;
     }
 
