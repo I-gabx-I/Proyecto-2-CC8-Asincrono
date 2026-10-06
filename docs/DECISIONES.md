@@ -133,7 +133,7 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 ### D-31 · No verificar el CRC de cada chunk del PNG de entrada · 2026-10-04 · Vigente
 - **Por qué:** obligaría a recorrer los 93 GB con un cálculo extra. La integridad del flujo de píxeles la comprueba igual el Adler-32 de zlib, que `Inflater` valida al final. El CRC32 que importa para el protocolo es el de cada tile (D-16).
 
-### D-32 · Ingesta con `-Xmx1g` · 2026-10-04 · Vigente
+### D-32 · Ingesta con `-Xmx1g` · 2026-10-04 · Reemplazada por D-37
 - **Contexto:** la memoria de la ingesta crece con el ancho de la imagen (franjas de 256 filas a todo lo ancho).
 - **Medido:** 250 MB con la imagen de 4 GB (36 743 px). La de 93 GB mide 176 393 px de ancho y quedaría cerca de 512 MB.
 - **Decisión:** `ingest.bat` usa 1 GB para tener margen. El servidor sigue con 512 MB.
@@ -157,3 +157,18 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 - **Decisión:** zoom máximo 16× (un dígito ocupa 48×80 px de pantalla). Por encima de 1:1, sin suavizado; por debajo, con suavizado.
 - **Por qué no es "zoom tipo Amazon":** no se interpola ni se inventa detalle; se muestran los píxeles reales del nivel máximo, que llegaron como tiles por el protocolo.
 - **Por qué el suavizado depende del zoom:** al ampliar, suavizar difumina los bordes; al reducir, no suavizar produce aliasing (moiré) en el texto.
+
+### D-37 · Heap de la ingesta: 4 GB, y los hilos del compresor son daemon (corrige D-32)
+
+**Problema.** La ingesta de 93 GB (176 393 px de ancho) falló en la franja 91/690 con `OutOfMemoryError` en `Reductor.reducir`, precedido por `Retried waiting for GCLocker too often`. Además, el proceso quedó colgado después del error.
+
+**Causa.**
+1. La memoria de la ingesta es proporcional al **ancho**: una franja del nivel máximo, más los búferes de los niveles superiores (≈ otra franja), más la cola de tiles. Memoria máxima observada con `-Xmx1g`: 600 MB (75 471 px), 646 MB (96 922 px) y 878 MB (136 325 px). Para 176 393 px ya no alcanza. El valor de D-32 se había medido con la imagen de 4 GB (36 743 px).
+2. `Deflater` e `Inflater` bloquean temporalmente el recolector de basura (GCLocker) mientras trabajan sobre un arreglo. Con el heap casi lleno, la reserva de 32 MiB contiguos no pudo esperar a una recolección y falló.
+3. Los hilos de `ThreadPoolExecutor` no eran *daemon*: al morir `main`, nadie llamaba a `terminar()` y la JVM no terminaba.
+
+**Decisión.**
+- `ingest.bat` usa `-Xmx4g`: memoria máxima observada con 176 393 px: 1455 MB, 2.8 veces por debajo del límite, y una cuarta parte de los 16 GB de la PC de pruebas. La memoria sigue sin depender del **alto** de la imagen; solo se ajustó el límite al ancho máximo de evaluación. El servidor no cambia (`-Xmx512m`), porque no maneja franjas.
+- `TileEncoderPool` crea sus hilos con `Thread.ofPlatform().daemon()`. En una ingesta normal no cambia nada (`terminar()` espera a todos los tiles). Ante un error, el proceso termina solo.
+
+**Verificación.** Con `-Xmx48m` sobre la imagen de 4 GB se provoca `OutOfMemoryError` y el proceso vuelve al prompt sin Ctrl+C. La ingesta de 93 GB con `-Xmx4g`: ver `PLAN.md`.
