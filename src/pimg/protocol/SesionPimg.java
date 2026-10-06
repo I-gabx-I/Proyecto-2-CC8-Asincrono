@@ -33,8 +33,10 @@ public final class SesionPimg implements WebSocketListener {
     private final TileCache cache;
     private final int heartbeatSeg;
     private final int tamTile;
+    private final boolean redSimulada;                 // servidor iniciado con --sim (§16)
 
     private WebSocketConnection ws;
+    private Enlace enlace;                             // salida al socket, directa o simulada
     private volatile Estado estado = Estado.CONNECTED;
     private volatile Catalogo.Imagen imagen;           // imagen abierta
     private long seqVigente = -1;                      // solo lo usa el hilo lector
@@ -46,11 +48,13 @@ public final class SesionPimg implements WebSocketListener {
     private Thread emisor;
     private long num = 0;                              // NUM (§8.3): solo lo usa el hilo emisor
 
-    public SesionPimg(Catalogo catalogo, TileCache cache, int heartbeatSeg, int tamTile) {
+    public SesionPimg(Catalogo catalogo, TileCache cache, int heartbeatSeg, int tamTile,
+                       boolean redSimulada) {
         this.catalogo = catalogo;
         this.cache = cache;
         this.heartbeatSeg = heartbeatSeg;
         this.tamTile = tamTile;
+        this.redSimulada = redSimulada;
     }
 
     // ======================= Eventos de la conexión =======================
@@ -58,6 +62,8 @@ public final class SesionPimg implements WebSocketListener {
     @Override
     public void alAbrir(WebSocketConnection c) {
         this.ws = c;
+        this.enlace = new Enlace(c, redSimulada);
+        this.enlace.iniciar();
         this.emisor = Thread.ofVirtual().start(this::bucleEmisor);
         log("sesion PIMG creada");
     }
@@ -74,6 +80,7 @@ public final class SesionPimg implements WebSocketListener {
                 case "GET_TILE" -> { exigir(Estado.IMAGE_OPEN); getTile(m); }
                 case "EVICT"    -> { exigir(Estado.IMAGE_OPEN); evict(m); }
                 case "CANCEL"   -> { exigir(Estado.IMAGE_OPEN); cancel(m); }
+                case "SIM"      -> { exigir(Estado.READY, Estado.IMAGE_OPEN); sim(m); }
                 default -> throw new PimgException(PimgException.MALFORMED, "Comando desconocido: " + m.comando());
             }
         } catch (PimgException e) {
@@ -94,6 +101,9 @@ public final class SesionPimg implements WebSocketListener {
         estado = Estado.CLOSED;
         if (emisor != null) {
             emisor.interrupt();
+        }
+        if (enlace != null) {
+            enlace.cerrar();
         }
         lockCola.lock();
         try {
@@ -255,6 +265,18 @@ public final class SesionPimg implements WebSocketListener {
         }
     }
 
+    private void sim(Mensaje m) throws PimgException, IOException {
+        if (!enlace.simulado()) {
+            throw new PimgException(PimgException.SIM_DISABLED, "Servidor iniciado sin --sim");
+        }
+        int perdida = (int) m.entero("PERD", 0, 50);
+        int ancho = (int) m.entero("BW", 0, 1_000_000);
+        int latencia = (int) m.entero("LAT", 0, 2000);
+        enlace.configurar(perdida, ancho, latencia);
+        enviar(Mensaje.de("SIM_OK").con("PERD", perdida).con("BW", ancho).con("LAT", latencia));
+        log(String.format("SIM perdida=%d %% ancho=%d KB/s latencia=%d ms", perdida, ancho, latencia));
+    }
+
     // ======================= Hilo emisor =======================
 
     private void bucleEmisor() {
@@ -285,9 +307,11 @@ public final class SesionPimg implements WebSocketListener {
                 }
                 if (p.tipo() == Tipo.DONE) {
                     enviar(Mensaje.de("DONE").con("SEQ", p.seq()).con("SENT", enviadosEnSeq));
-                    log(String.format("DONE seq=%d SENT=%d TARDE=%d | sesion: %d de %d tarde (%.1f %%) | %s",
+                    log(String.format("DONE seq=%d SENT=%d TARDE=%d | sesion: %d de %d tarde (%.1f %%)%s | %s",
                             p.seq(), enviadosEnSeq, tardeEnSeq, tardesTotal, atendidosTotal,
-                            atendidosTotal == 0 ? 0.0 : 100.0 * tardesTotal / atendidosTotal, cache.estadisticas()));
+                            atendidosTotal == 0 ? 0.0 : 100.0 * tardesTotal / atendidosTotal,
+                            enlace.simulado() ? ", perdidos en el enlace: " + enlace.descartados() : "",
+                            cache.estadisticas()));
                 } else if (enviarTile(p)) {
                     enviadosEnSeq++;
                     if (turno.tarde()) {
@@ -311,7 +335,7 @@ public final class SesionPimg implements WebSocketListener {
             return false;
         }
         byte formato = img.formato().equals("PNG") ? TileFrame.FMT_PNG : TileFrame.FMT_JPEG;
-        ws.enviarBinario(TileFrame.construir(p.seq(), ++num, p.z(), p.x(), p.y(), formato, datos));
+        enlace.enviarBinario(TileFrame.construir(p.seq(), ++num, p.z(), p.x(), p.y(), formato, datos));
         if (img == imagen) {
             enviados.add(new Vista.Tile(p.z(), p.x(), p.y()).clave()); // se marca AL ENVIAR, no al encolar
         }
@@ -330,7 +354,7 @@ public final class SesionPimg implements WebSocketListener {
     }
 
     private void enviar(Mensaje m) throws IOException {
-        ws.enviarTexto(m.toString());
+        enlace.enviarTexto(m.toString());
     }
 
     private void log(String mensaje) {

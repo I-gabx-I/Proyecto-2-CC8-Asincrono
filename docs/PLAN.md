@@ -33,7 +33,7 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 | 3 | Legibilidad: zoom > 1:1 | `feat/legibilidad` | ✅ |
 | — | Ingesta de las 4 imágenes de evaluación (corrige el heap, D-37) | `fix/memoria-ingesta` | ✅ |
 | 4 | Cabecera v2 (`NUM`) + planificación EDF | `feat/edf` | ✅ |
-| 5 | Red simulada + controles en el panel | `feat/red-simulada` | ⬜ |
+| 5 | Red simulada + controles en el panel | `feat/red-simulada` | ✅ |
 | 6 | FEC con paridad XOR entrelazada | `feat/fec` | ⬜ |
 | 7 | Controlador PI (`REPORT`, `CTRL`, gráficas) | `feat/control-pi` | ⬜ |
 | 8 | Filtros de Bloom, `RESUME` y re-declaración de vista | `feat/bloom-resume` | ⬜ |
@@ -175,15 +175,25 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 
 ---
 
-## Fase 5 — Red simulada ⬜
+## Fase 5 — Red simulada ✅
 
 **Referencia:** `PROTOCOLO.md` §16.
 
-- [ ] `RedSimulada`: pérdida (%), ancho de banda (KB/s) y latencia (ms)
-- [ ] Servidor con `--sim`; comando `SIM` / `SIM_OK`
-- [ ] Controles en el panel y opción "cliente lento"
+- [x] `RedSimulada`: pérdida (%), ancho de banda (KB/s) y latencia (ms)
+- [x] Servidor con `--sim`; comando `SIM` / `SIM_OK`
+- [x] Controles en el panel y opción "cliente lento"
 
 **Criterio:** con 5 % de pérdida, el panel muestra `PERD` subiendo y tiles faltantes.
+
+**Evidencia:**
+
+| Prueba | Resultado |
+|---|---|
+| `ProbarRed` | 6/6 OK: 5010 perdidos de 100 000 (5.01 %); 100 × 10 KB a 100 KB/s terminan en 10 000 ms (10 080 ms con 80 ms de latencia); un enlace libre no acumula permisos; semilla repetible |
+| `SIM` sin `--sim` | `ERROR 403 Servidor iniciado sin --sim` |
+| Pérdida 5 % | `Ultimo NUM` 595 − `Tiles recibidos` 583 = 12 = `Perdidos`; huecos con el ancestro ampliado (`Faltan en pantalla` 1) que no se llenan solos |
+| 300 KB/s + 80 ms, sin PI | El tile visible tardó > 10 s tras un zoom: cola del enlace llena de tiles de vistas abandonadas (peor caso 14 s). Motiva la Fase 7 |
+| Cliente lento 100 ms/tile | Los tiles se procesan de uno en uno (10/s); el visible espera detrás de los niveles intermedios |
 
 ---
 

@@ -60,3 +60,31 @@ html, body {
   color: #7fd1ff;
   min-width: 22ch;          /* ancho fijo: la barra no salta al cambiar los números */
 }
+
+#red {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  padding: 8px 12px;
+  background: rgba(15, 18, 24, 0.85);
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+#red h2 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8a93a3;
+}
+#red input {
+  width: 7ch;
+  background: #1b1f27;
+  color: inherit;
+  border: 1px solid #2a2f3a;
+  border-radius: 4px;
+}
+#simEstado { color: #7fd1ff; font-family: ui-monospace, Consolas, monospace; }

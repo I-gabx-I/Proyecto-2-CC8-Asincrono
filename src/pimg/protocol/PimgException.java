@@ -3,6 +3,7 @@ package pimg.protocol;
 /** Error del protocolo PIMG con su código (PROTOCOLO.md §10). */
 public final class PimgException extends Exception {
     public static final int MALFORMED           = 400;
+    public static final int SIM_DISABLED        = 403;
     public static final int IMAGE_NOT_FOUND     = 404;
     public static final int IMAGE_NOT_READY     = 409;
     public static final int INVALID_STATE       = 412;

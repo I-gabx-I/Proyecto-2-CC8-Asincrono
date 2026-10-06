@@ -284,8 +284,8 @@ El valor empieza tras el **primer** `:`. Clave repetida → `400`. Orden libre. 
 | `REPORT` | C→S | `MAX`, `PERD`, `COLA`, `DEC`, `JIT`, `REC` | `IMAGE_OPEN` | `CTRL` | 📝 |
 | `CTRL` | S→C | `R`, `Q`, `E`, `TARDE` | — | — | 📝 |
 | `CANCEL` | C→S | `SEQ` | `IMAGE_OPEN` | ninguna | ✅ |
-| `SIM` | C→S | `PERD`, `BW`, `LAT` | `READY`, `IMAGE_OPEN` | `SIM_OK` o `ERROR 403` | 📝 |
-| `SIM_OK` | S→C | `PERD`, `BW`, `LAT` (valores aplicados) | — | — | 📝 |
+| `SIM` | C→S | `PERD`, `BW`, `LAT` | `READY`, `IMAGE_OPEN` | `SIM_OK` o `ERROR 403` | ✅ |
+| `SIM_OK` | S→C | `PERD`, `BW`, `LAT` (valores aplicados) | — | — | ✅ |
 | `DONE` | S→C | `SEQ`, `SENT`, `PAR` | — | — | 🔁 |
 | `ERROR` | S→C | `CODE`, `MSG` | — | — | ✅ |
 | ~~`GET_TILE`~~ | — | **Eliminado en v2** (§0.2) | — | — | ❌ |
@@ -465,8 +465,9 @@ src/pimg/
 │   ├── ControladorPI.java    tasa R a partir de los reportes
 │   ├── FiltroBloom.java      estructura y hashes (idénticos a los de JS, §13.3)
 │   ├── PlanificadorEDF.java  cola por plazos ✅
-│   └── RedSimulada.java      pérdida, ancho de banda y latencia artificiales
+│   └── RedSimulada.java      pérdida, ancho de banda y latencia artificiales ✅
 └── protocol/SesionPimg.java  orquesta: usa transporte/, tiles/ y websocket/
+    protocol/Enlace.java       ✅ hilo y cola FIFO de 4 MB que aplican la red simulada sobre el socket
 web/js/transporte/            📝 fec.js, bloom.js, reportes.js
 ```
 
@@ -843,7 +844,7 @@ Intervalo mínimo entre re-declaraciones: 200 ms.
 
 ---
 
-## 16. Red simulada 📝
+## 16. Red simulada ✅
 
 En localhost no hay pérdidas ni límite de ancho de banda: FEC nunca tendría qué recuperar y el PI siempre estaría en `R_max`. La red simulada reproduce un enlace real **entre el emisor y el socket**:
 
@@ -867,6 +868,10 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 | PI, cliente lento | Decodificación +30 ms | `COLA` sube, `R` baja |
 | EDF | `BW` bajo | `TARDE` sube; el centro llega antes que los bordes |
 | Bloom / `RESUME` | Reiniciar el servidor con la caché llena | Tiles no reenviados tras reconectar |
+
+**Implementación.** `transporte/RedSimulada` (modelo puro, D-39) y `protocol/Enlace` (hilo, cola FIFO de 4 MB y contrapresión). Se activa con `.\run.bat --sim`. Si `PERD`, `BW` y `LAT` valen 0 y la cola está vacía, el enlace escribe directo al socket.
+
+**Resultado medido sin control de ritmo (el "antes" del PI).** Con `BW = 300 KB/s` y `LAT = 80 ms`, al hacer zoom hacia una zona nueva, el tile visible tardó **más de 10 s**. Cada nivel intermedio genera un `VIEWPORT`; EDF cancela lo pendiente en **su** cola, pero el servidor ya había llenado la cola del enlace en milisegundos. El tile necesario espera detrás de tiles de vistas abandonadas: peor caso `4 MB / 300 KB/s ≈ 14 s`. El servidor no lo ve (`TARDE` se mide al sacar de la cola EDF). Es *bufferbloat* (Gettys, 2011). Lo mismo ocurre con "cliente lento" a 100 ms/tile, en la cola de decodificación del cliente. Lo corrige el PI (§12): con ~8 tiles en camino, la espera máxima es `8 × 30 KB / 300 KB/s ≈ 0.8 s`.
 
 ---
 
@@ -898,7 +903,7 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 - 📝 **Filtro:** construye y envía `BLOOM` según §13.5.
 - 📝 **Re-declaración de vista** según §15.
 - ✅ **Reconexión:** backoff exponencial 1, 2, 4… máx. 30 s; 📝 conserva la caché y usa `RESUME`.
-- **Panel de depuración:** conexión, imagen, nivel, zoom, `SEQ`, tiles y MB en memoria, faltantes, bytes recibidos, % respecto al original. 📝 Además: gráficas de `R` y `Q` en el tiempo; `PERD`, `REC`, `TARDE`, re-declaraciones; controles de red simulada y cliente lento.
+- **Panel de depuración:** conexión, imagen, nivel, zoom, `SEQ`, tiles y MB en memoria, faltantes, bytes recibidos, % respecto al original. ✅ `NUM`, perdidos y controles de red simulada y cliente lento. 📝 Además: gráficas de `R` y `Q` en el tiempo; `REC`, `TARDE`, re-declaraciones.
 
 ---
 
@@ -924,7 +929,7 @@ PING cada `HB = 15 s`; sin ningún frame del cliente en 30 s → conexión zombi
 | Código | Nombre | Cuándo | ¿Cierra? | Estado |
 |---|---|---|---|---|
 | 400 | `MALFORMED` | Sintaxis inválida, campo faltante o fuera de rango, `BITS` de tamaño incorrecto, comando desconocido | No | ✅ |
-| 403 | `SIM_DISABLED` | `SIM` sin haber iniciado el servidor con `--sim` | No | 📝 |
+| 403 | `SIM_DISABLED` | `SIM` sin haber iniciado el servidor con `--sim` | No | ✅ |
 | 404 | `IMAGE_NOT_FOUND` | `OPEN`/`RESUME` con imagen inexistente | No | ✅ |
 | 409 | `IMAGE_NOT_READY` | Imagen en `PROCESSING` o `FAILED` | No | 📝 |
 | 412 | `INVALID_STATE` | Comando no permitido en el estado actual | No | ✅ |
@@ -1084,7 +1089,7 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 |---|---|
 | FEC con 1 %, 5 % y 10 % de pérdida | % de pérdidas recuperadas por FEC; re-declaraciones necesarias; bytes extra |
 | PI con escalón de ancho de banda | Sobrepico de `Q`, tiempo de establecimiento, error estacionario |
-| PI sin control (tasa fija) vs con PI | Tiles desperdiciados al cancelar una vista |
+| PI sin control (tasa fija) vs con PI | Tiles desperdiciados al cancelar una vista; espera del tile visible. **Sin PI, medido:** > 10 s con 300 KB/s (peor caso calculado 14 s) |
 | Bloom | Bytes de sincronización vs v1 (`EVICT`); falsos positivos observados; tiles no reenviados con `RESUME` |
 | EDF | % de plazos incumplidos según el ancho de banda |
 | Global | Bytes recibidos vs tamaño de la imagen al navegar 5 min en la imagen de 93 GB |
@@ -1099,7 +1104,7 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 | Alta | Almacenamiento empaquetado + ingesta reanudable | ✅ |
 | Alta | Tiles PNG en niveles altos + zoom > 1:1 sin suavizado | ✅ |
 | Alta | Cabecera v2 (`NUM`) + EDF | ✅ |
-| Alta | Red simulada + controles en el panel | 📝 |
+| Alta | Red simulada + controles en el panel | ✅ |
 | Alta | FEC (servidor y cliente) | 📝 |
 | Alta | `REPORT` + controlador PI + `CTRL` + gráficas | 📝 |
 | Alta | Bloom + `RESUME` + re-declaración (retira `EVICT` y `GET_TILE`) | 📝 |
