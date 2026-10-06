@@ -29,8 +29,8 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 | — | Base v1: HTTP/WebSocket propios, PIMG v1, cliente, ingesta en cascada | `main` | ✅ |
 | — | Especificación `pimg.v2` y registro de decisiones | `docs/protocolo-v2` | ✅ |
 | 1 | Lector PNG en streaming | `feat/png-source` | ⬜ |
-| 2 | Almacenamiento empaquetado + ingesta reanudable | `feat/almacen-empaquetado` | ⬜ |
-| 3 | Legibilidad: tiles PNG + zoom > 1:1 | `feat/legibilidad` | ⬜ |
+| 2 | Almacenamiento empaquetado + tiles PNG + ingesta reanudable | `feat/almacen-empaquetado` | ⬜ |
+| 3 | Legibilidad: zoom > 1:1 | `feat/legibilidad` | ⬜ |
 | 4 | Cabecera v2 (`NUM`) + planificación EDF | `feat/edf` | ⬜ |
 | 5 | Red simulada + controles en el panel | `feat/red-simulada` | ⬜ |
 | 6 | FEC con paridad XOR entrelazada | `feat/fec` | ⬜ |
@@ -71,17 +71,29 @@ Ingesta 4 GB (36 743 px)	27 660/27 660 tiles, 109 s, 1179 MB en disco, 250 MB de
 Velocidad del lector	~1500 MB/s desde caché; ~40 MB/s desde el disco duro (el límite es el disco)
 ---
 
-## Fase 2 — Almacenamiento empaquetado + ingesta reanudable ⬜
+## Fase 2 — Almacenamiento empaquetado + tiles PNG + ingesta reanudable ⬜
 
-**Objetivo:** la imagen de 93 GB genera 635 214 tiles; como archivos sueltos son lentos de escribir, copiar y abrir.
+**Objetivo:** la imagen de 93 GB genera 635 214 tiles; como archivos sueltos son lentos de escribir, copiar y abrir. Además, los tiles pasan a PNG sin pérdida para que se lean los dígitos.
+**Referencias:** `PROTOCOLO.md` §22.2 · `DECISIONES.md` D-14, D-33.
 
-- [ ] Un archivo por nivel (`z.pack`) + índice `(x, y) → (offset, longitud)`
-- [ ] `TileStore` lee del paquete; el servidor no cambia (solo usa `TileStore`)
-- [ ] Ingesta reanudable: punto de control por franja; si se interrumpe, continúa donde quedó
+- [X] Un archivo por nivel (`z.pack`) + índice `(x, y) → (offset, longitud)`
+- [X] `TileStore` lee del paquete; el servidor no cambia (solo usa `TileStore`)
+- [X] Ingesta reanudable: **descartada** (D-34). El PNG se lee secuencial desde el inicio igual; la ingesta de 4 GB tarda 34 s
 - [ ] Barra de progreso con tiempo estimado restante
-- [ ] Ingesta completa de las imágenes de 17, 28, 55 y 93 GB
+- [X] Tiles PNG sin pérdida (D-14): `TileEncoderPool` codifica en PNG y el mensaje TILE los envía con `FMT = 2`
+- [X] Ingesta completa de la imagen de 4 GB: tiempo, disco y memoria, comparados contra JPEG (1179 MB, 109 s)
 
-**Criterio:** la de 93 GB queda procesada y navegable; tiempo, disco y memoria anotados.
+**Criterio:** la imagen de 4 GB queda procesada y navegable con tiles PNG; tiempo, disco y memoria anotados.
+
+**Evidencia:**
+
+Prueba	Resultado
+Tiles PNG contra JPEG (4 GB)	836 MB contra 1179 MB: 29 % menos disco, sin pérdida
+Archivos de la pirámide (4 GB)	19 contra 27 660
+Tiempo de ingesta (4 GB)	33.6 s contra 117 s con archivos sueltos (3.5×)
+Índices .idx	Tamaño exacto 16 + tiles × 12 en los 9 niveles
+Lectura desde el paquete	27 660/27 660 tiles; 2.5 ms/tile incluyendo decodificación
+Fidelidad (5775 px)	Nivel máximo idéntico al original, píxel por píxel
 
 ---
 
@@ -89,7 +101,6 @@ Velocidad del lector	~1500 MB/s desde caché; ~40 MB/s desde el disco duro (el l
 
 **Objetivo:** que los dígitos de 3×5 px se lean claramente en la máxima definición.
 
-- [ ] Tiles PNG sin pérdida (al menos en los niveles altos)
 - [ ] Zoom más allá de 1:1, ampliando sin suavizado (`imageSmoothingEnabled = false`)
 - [ ] Coordenada de la imagen bajo el cursor
 - [ ] Verificar visualmente con las imágenes pequeñas
@@ -166,6 +177,7 @@ Velocidad del lector	~1500 MB/s desde caché; ~40 MB/s desde el disco duro (el l
 
 - [ ] ARC en `TileCache` (LRU como opción para comparar)
 - [ ] Ingesta automática con `WatchService` (`PROCESSING` con %, `FAILED`)
+- [ ] Reingestar una imagen con el servidor corriendo: marcarla PROCESSING, sacarla de `Catalogo` y cerrar sus `.pack` antes de regenerarla
 - [ ] "Ir a x, y" en el cliente
 
 ---

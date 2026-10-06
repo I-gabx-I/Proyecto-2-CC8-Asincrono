@@ -16,46 +16,52 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Comprime tiles a JPEG y los guarda, en paralelo. Trabajo de CPU: hilos de plataforma. */
+/** Codifica tiles (PNG o JPEG) y los guarda, en paralelo. Trabajo de CPU: hilos de plataforma. */
 public final class TileEncoderPool {
     private final TileStore destino;
-    private final float calidad;
+    private final String formato;          // "png" o "jpeg" (nombre de ImageIO)
+    private final float calidadJpeg;       // solo se usa con JPEG
     private final ThreadPoolExecutor pool;
-    private final ThreadLocal<ImageWriter> escritores =
-            ThreadLocal.withInitial(() -> ImageIO.getImageWritersByFormatName("jpeg").next());
+    private final ThreadLocal<ImageWriter> escritores;   // los ImageWriter no se comparten entre hilos
 
     private final AtomicLong tiles = new AtomicLong();
     private final AtomicLong bytes = new AtomicLong();
     private final AtomicReference<Exception> primerError = new AtomicReference<>();
 
-    public TileEncoderPool(TileStore destino, float calidad, int hilos, int capacidadCola) {
+    public TileEncoderPool(TileStore destino, String formato, float calidadJpeg, int hilos, int capacidadCola) {
+        if (!ImageIO.getImageWritersByFormatName(formato).hasNext()) {
+            throw new IllegalArgumentException("Formato de tile no soportado: " + formato);
+        }
         this.destino = destino;
-        this.calidad = calidad;
+        this.formato = formato;
+        this.calidadJpeg = calidadJpeg;
+        this.escritores = ThreadLocal.withInitial(() -> ImageIO.getImageWritersByFormatName(formato).next());
         this.pool = new ThreadPoolExecutor(hilos, hilos, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(capacidadCola),          // cola ACOTADA
                 new ThreadPoolExecutor.CallerRunsPolicy());       // cola llena -> backpressure
     }
 
-    /** Encola un tile para comprimirlo y guardarlo. */
+    /** Encola un tile para codificarlo y guardarlo. */
     public void enviar(int z, int x, int y, BufferedImage tile) {
         pool.execute(() -> {
             try {
-                byte[] jpeg = comprimir(tile);
-                destino.escribir(z, x, y, jpeg);
+                byte[] datos = codificar(tile);
+                destino.escribir(z, x, y, datos);
                 tiles.incrementAndGet();
-                bytes.addAndGet(jpeg.length);
+                bytes.addAndGet(datos.length);
             } catch (Exception e) {
                 primerError.compareAndSet(null, e);
             }
         });
     }
 
-    private byte[] comprimir(BufferedImage tile) throws IOException {
+    private byte[] codificar(BufferedImage tile) throws IOException {
         ImageWriter escritor = escritores.get();
         ImageWriteParam param = escritor.getDefaultWriteParam();
-        param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
-        param.setCompressionQuality(calidad);
-
+        if (formato.equals("jpeg")) {                     // PNG no tiene "calidad": es sin pérdida
+            param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+            param.setCompressionQuality(calidadJpeg);
+        }
         ByteArrayOutputStream salida = new ByteArrayOutputStream(64 * 1024);
         try (MemoryCacheImageOutputStream ios = new MemoryCacheImageOutputStream(salida)) {
             escritor.setOutput(ios);
@@ -64,7 +70,7 @@ public final class TileEncoderPool {
         return salida.toByteArray();
     }
 
-    /** Espera a que se compriman todos los tiles pendientes. */
+    /** Espera a que se codifiquen todos los tiles pendientes. */
     public void terminar() throws Exception {
         pool.shutdown();
         pool.awaitTermination(1, TimeUnit.DAYS);

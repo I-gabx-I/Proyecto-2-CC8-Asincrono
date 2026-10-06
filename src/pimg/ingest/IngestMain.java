@@ -9,6 +9,7 @@ public final class IngestMain {
     private static final int T = 256;
     private static final Path SALIDA = Path.of("data", "tiles");
     private static final float CALIDAD_JPEG = 0.85f;
+    private static final String FORMATO = "png";   // formato de los tiles: "png" (D-14) o "jpeg"
 
     public static void main(String[] args) throws Exception {
         if (args.length == 3 && args[0].equals("--plan")) {
@@ -35,13 +36,13 @@ public final class IngestMain {
 
         try (ImageSource fuente = Fuentes.abrir(archivo)) {
             PyramidLayout piramide = new PyramidLayout(fuente.ancho(), fuente.alto(), T);
-            TileStore destino = new TileStore(SALIDA, id);
-            destino.prepararNiveles(piramide.niveles());
+            TileStore destino = new TileStore(SALIDA, id, FORMATO);
+            destino.prepararEscritura(piramide);
 
-            System.out.println("Lector: " + fuente.descripcion() + " | hilos de compresion: " + hilos);
+            System.out.println("Lector: " + fuente.descripcion() + " | tiles: " + FORMATO + " | hilos: " + hilos);
             imprimirPiramide(piramide);
 
-            TileEncoderPool compresor = new TileEncoderPool(destino, CALIDAD_JPEG, hilos, hilos * 32);
+            TileEncoderPool compresor = new TileEncoderPool(destino, FORMATO, CALIDAD_JPEG, hilos, hilos * 32);
             PyramidBuilder constructor = new PyramidBuilder(piramide, compresor);
 
             Runtime rt = Runtime.getRuntime();
@@ -61,7 +62,8 @@ public final class IngestMain {
             }
             constructor.terminar();
             compresor.terminar();
-            destino.escribirMeta(piramide, "JPEG");
+            destino.cerrarEscritura();          // índices a disco; recién ahí la pirámide está completa
+            destino.escribirMeta(piramide);
 
             double total = (System.nanoTime() - inicio) / 1e9;
             System.out.printf("%n----- RESUMEN -----%n");
