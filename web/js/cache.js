@@ -2,7 +2,7 @@
 export class CacheTiles {
   constructor(maximo, alExpulsar) {
     this.maximo = maximo;
-    this.alExpulsar = alExpulsar;   // avisa qué clave salió (para enviar EVICT)
+    this.alExpulsar = alExpulsar;   // avisa que salió una clave (el próximo filtro de Bloom ya no la incluye)
     this.mapa = new Map();          // conserva el orden: el primero es el menos usado
   }
 
@@ -36,6 +36,9 @@ export class CacheTiles {
   }
 
   get tamanio() { return this.mapa.size; }
+
+  /** Claves "z,x,y" en caché, para armar el filtro de Bloom (§13.5). */
+  claves() { return this.mapa.keys(); }
 
   bytesEstimados() {
     let total = 0;

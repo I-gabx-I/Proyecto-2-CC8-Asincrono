@@ -1,6 +1,7 @@
 import { crc32 } from './crc32.js';
 import { ReceptorFec } from './transporte/fec.js';
 import { Reportero } from './transporte/reportes.js';
+import { FiltroBloom, M, K } from './transporte/bloom.js';
 
 const CABECERA = 28;                // PROTOCOLO.md §8.1
 
@@ -14,10 +15,14 @@ export class ClientePimg {
     this.intentos = 0;
     this.ultimoNum = 0;               // último NUM recibido en esta conexión (§8.3)
     this.stats = { bytes: 0, tiles: 0, crcMalos: 0, descartados: 0, perdidos: 0,
-                   paridades: 0, recuperados: 0, irrecuperables: 0 };
+                   paridades: 0, recuperados: 0, irrecuperables: 0, filtros: 0 };
     this.fec = new ReceptorFec(32);   // últimos 32 tiles recibidos, para reconstruir (§11.5)
     this.reportero = new Reportero(); // mediciones para REPORT (§12.2)
     this.temporizador = null;
+    this.rpt = 100;                   // ms entre REPORT (lo informa HELLO_OK)
+    this.sem = 0;                     // semilla de los hashes del filtro (§13.7)
+    this.cambios = false;             // la caché cambió desde el último filtro
+    this.expulsiones = false;         // ...y fue por expulsiones
   }
 
   conectar() {
@@ -61,31 +66,61 @@ export class ClientePimg {
     this.enviar(`OPEN|IMG:${id}`);
   }
 
+  /** RESUME (§13.6): misma imagen tras reconectar; el filtro dice qué conserva la caché. */
+  reanudar(id) {
+    this.seqInicioImagen = this.seq + 1;
+    this.fec.vaciar();
+    const f = this.armarFiltro();
+    this.enviar(`RESUME|IMG:${id}|SEM:${this.sem}|BITS:${f.base64()}`);
+  }
+
+  /** BLOOM (§13.4): estado completo de la caché, fechado con el último NUM recibido. */
+  enviarBloom() {
+    const max = this.ultimoNum;       // todo lo de NUM ≤ max ya está en caché o decodificándose
+    const f = this.armarFiltro();
+    this.stats.filtros++;
+    this.enviar(`BLOOM|MAX:${max}|SEM:${this.sem}|BITS:${f.base64()}`);
+  }
+
+  /** Se reconstruye completo cada vez: un filtro de Bloom no permite borrar (§13.5). */
+  armarFiltro() {
+    const f = new FiltroBloom(this.sem);
+    for (const clave of this.ev.clavesEnPoder()) {
+      const [z, x, y] = clave.split(',').map(Number);
+      f.agregar(z, x, y);
+    }
+    this.cambios = false;
+    this.expulsiones = false;
+    return f;
+  }
+
+  marcarCambio(expulsion) {
+    this.cambios = true;
+    if (expulsion) this.expulsiones = true;
+  }
+
+  /** Otra semilla mueve todas las posiciones: elimina un falso positivo persistente (§13.7). */
+  cambiarSemilla() {
+    this.sem = (this.sem + 1) >>> 0;
+  }
+
   pedirVista(z, x, y, vw, vh) {
     this.seq++;
     this.enviar(`VIEWPORT|SEQ:${this.seq}|Z:${z}|X:${x}|Y:${y}|VW:${vw}|VH:${vh}`);
   }
 
-  /** REPORT cada 100 ms mientras haya una imagen abierta (§12.2). */
+  /** Mientras haya una imagen abierta: REPORT cada RPT ms (§12.2) y BLOOM cada 1 s si la caché cambió (§13.5). */
   iniciarReportes() {
     clearInterval(this.temporizador);
+    let tics = 0;
     this.temporizador = setInterval(() => {
       this.enviar(this.reportero.mensaje(this.ultimoNum, this.stats.perdidos, this.stats.recuperados));
-    }, 100);
+      if (++tics % Math.round(1000 / this.rpt) === 0 && this.cambios) this.enviarBloom();
+    }, this.rpt);
   }
 
   simular(perd, bw, lat) {
     this.enviar(`SIM|PERD:${perd}|BW:${bw}|LAT:${lat}`);
-  }
-
-  pedirTile(z, x, y) {
-    this.enviar(`GET_TILE|SEQ:${this.seq}|Z:${z}|X:${x}|Y:${y}`);
-  }
-
-  evict(claves) {
-    for (let i = 0; i < claves.length; i += 500) {   // respeta el máximo de 16 KB por mensaje
-      this.enviar(`EVICT|TILES:${claves.slice(i, i + 500).join(';')}`);
-    }
   }
 
   // ---------- Mensajes servidor -> cliente ----------
@@ -99,6 +134,8 @@ export class ClientePimg {
     }
     switch (comando) {
       case 'HELLO_OK':
+        this.rpt = +c.RPT || 100;
+        if (+c.BM !== M || +c.BK !== K) console.warn('PIMG: parametros del filtro distintos', c.BM, c.BK);
         this.enviar('LIST');
         break;
       case 'LIST_RESP': {
@@ -111,7 +148,8 @@ export class ClientePimg {
       }
       case 'META':
         this.iniciarReportes();
-        this.ev.alMeta({ id: c.IMG, ancho: +c.W, alto: +c.H, tile: +c.TS, niveles: +c.L, formato: c.FMT });
+        this.ev.alMeta({ id: c.IMG, ancho: +c.W, alto: +c.H, tile: +c.TS, niveles: +c.L, formato: c.FMT,
+                         reanudada: c.RES === '1' });
         break;
       case 'DONE':
         this.ev.alDone(+c.SEQ, +c.SENT, +c.PAR);
@@ -161,7 +199,7 @@ export class ClientePimg {
     const datos = new Uint8Array(buf, CABECERA, largo);
     if (crc32(datos) !== crc) {                  // integridad extremo a extremo
       this.stats.crcMalos++;
-      this.pedirTile(z, x, y);                   // GET_TILE se retira en la Fase 8
+      // No se pide de nuevo: lo reconstruye FEC (§11.5) o vuelve con la re-declaración (§15)
       return;
     }
     this.stats.tiles++;
