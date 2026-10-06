@@ -101,11 +101,20 @@ Fidelidad (5775 px)	Nivel máximo idéntico al original, píxel por píxel
 
 **Objetivo:** que los dígitos de 3×5 px se lean claramente en la máxima definición.
 
-- [ ] Zoom más allá de 1:1, ampliando sin suavizado (`imageSmoothingEnabled = false`)
-- [ ] Coordenada de la imagen bajo el cursor
-- [ ] Verificar visualmente con las imágenes pequeñas
+- [X] Zoom más allá de 1:1, ampliando sin suavizado (`imageSmoothingEnabled = false`)
+- [X] Coordenada de la imagen bajo el cursor
+- [X] Verificar visualmente con las imágenes pequeñas
 
 **Criterio:** en la imagen de 4 GB se lee cualquier número al máximo zoom.
+
+**Evidencia:**
+
+Prueba	Resultado
+Zoom máximo	1600 %: cada píxel como bloque nítido, dígitos de 3×5 px legibles
+Transferido al navegar hasta el máximo detalle	0.586 % de la imagen original
+Servidor leyendo del .pack (Fase 2 en uso real)	0 tiles faltantes, 0 CRC malos
+Caché compartida del servidor	Tras recargar la página, 9 de 9 tiles servidos desde RAM, sin tocar el disco
+Coordenada bajo el cursor	Correcta; desaparece fuera de la imagen
 
 ---
 

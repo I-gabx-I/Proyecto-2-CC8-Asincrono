@@ -1,5 +1,6 @@
 const FUNDIDO_MS = 150;          // duración del fundido de un tile nuevo
 const SUAVIZADO = 0.2;           // fracción del camino de zoom recorrida en cada cuadro
+const ZOOM_MAX = 16;             // 16 px de pantalla por píxel original: un dígito de 3×5 px se ve de 48×80
 
 /** Cámara continua, dibujo en canvas y entrada del usuario. */
 export class Visor {
@@ -20,6 +21,7 @@ export class Visor {
 
     this.faltantes = 0;
     this.cuadricula = false;
+    this.onCursor = null;        // función opcional: recibe {x, y} del píxel bajo el mouse, o null
     this.llegadas = new Map();   // clave -> momento de llegada (para el fundido)
     this.dibujoPendiente = false;
     this.ajustarTamanio();
@@ -40,7 +42,7 @@ export class Visor {
 
   limitarZoom(zoom) {
     const minimo = Math.min(this.w / this.meta.ancho, this.h / this.meta.alto) / 2;
-    return Math.min(1, Math.max(minimo, zoom));    // máximo 1:1 con el original: sin detalle inventado
+    return Math.min(ZOOM_MAX, Math.max(minimo, zoom));   // más allá de 1:1 se ven los píxeles reales como bloques
   }
 
   /** Vista exacta en píxeles del nivel z, y escala d con la que se dibuja ese nivel. */
@@ -118,6 +120,9 @@ export class Visor {
 
     const animando = this.avanzarAnimacion();
     const g = this.geometria();
+    // Ampliar (zoom > 1:1): vecino más cercano, cada píxel como bloque nítido.
+    // Reducir (zoom ≤ 1:1): con suavizado, para evitar aliasing en el texto.
+    ctx.imageSmoothingEnabled = this.zoom <= 1;
     const T = this.meta.tile, z = this.z;
     const anchoZ = this.anchoNivel(z), altoZ = this.altoNivel(z);
     const ahora = performance.now();
@@ -198,6 +203,15 @@ export class Visor {
     this.cambio();
   }
 
+  /** Píxel de la imagen original bajo el punto (mx, my) de la pantalla, o null si cae fuera. */
+  coordenadaEn(mx, my) {
+    if (!this.meta) return null;
+    const x = Math.floor(this.cx + (mx - this.w / 2) / this.zoom);
+    const y = Math.floor(this.cy + (my - this.h / 2) / this.zoom);
+    if (x < 0 || y < 0 || x >= this.meta.ancho || y >= this.meta.alto) return null;
+    return { x, y };
+  }
+
   mover(dx, dy) {
     this.cx += dx / this.zoom;
     this.cy += dy / this.zoom;
@@ -233,10 +247,15 @@ export class Visor {
       c.setPointerCapture(e.pointerId);
     });
     c.addEventListener('pointermove', e => {
+      if (this.onCursor) {
+        const r = c.getBoundingClientRect();
+        this.onCursor(this.coordenadaEn(e.clientX - r.left, e.clientY - r.top));
+      }
       if (!ultimo) return;
       this.mover(ultimo.x - e.clientX, ultimo.y - e.clientY);
       ultimo = { x: e.clientX, y: e.clientY };
     });
+    c.addEventListener('pointerleave', () => { if (this.onCursor) this.onCursor(null); });
     c.addEventListener('pointerup', () => { ultimo = null; });
     c.addEventListener('pointercancel', () => { ultimo = null; });
 
