@@ -176,7 +176,7 @@ HTTP y WebSocket están **implementados a mano** sobre `java.net.Socket`, sin li
 
 ---
 
-## 4. Establecimiento de la conexión ✅ (🔁 subprotocolo)
+## 4. Establecimiento de la conexión ✅
 
 ### 4.1 HTTP/1.1
 
@@ -187,7 +187,7 @@ HTTP y WebSocket están **implementados a mano** sobre `java.net.Socket`, sin li
 
 ### 4.2 Upgrade a WebSocket
 
-El cliente abre `ws://<mismo host>/ws` con subprotocolo **`pimg.v2`** 🔁. Validaciones en orden:
+El cliente abre `ws://<mismo host>/ws` con subprotocolo **`pimg.v2`**. Validaciones en orden:
 
 | Condición | Si falla |
 |---|---|
@@ -272,7 +272,7 @@ El valor empieza tras el **primer** `:`. Clave repetida → `400`. Orden libre. 
 
 | Comando | Dir. | Campos | Estado requerido | Respuesta | Estado |
 |---|---|---|---|---|---|
-| `HELLO` | C→S | `V` (=2), `CACHE` (1–1 000 000) | `CONNECTED` | `HELLO_OK` o `ERROR` | 🔁 |
+| `HELLO` | C→S | `V` (=2), `CACHE` (1–1 000 000) | `CONNECTED` | `HELLO_OK` o `ERROR` | ✅ |
 | `HELLO_OK` | S→C | `V`, `HB` (s), `TS` (px), `BM` (bits del filtro), `BK` (hashes), `RPT` (ms entre reportes) | — | — | 🔁 |
 | `LIST` | C→S | — | `READY`, `IMAGE_OPEN` | `LIST_RESP` | ✅ |
 | `LIST_RESP` | S→C | `IMGS` = `id,ESTADO,PROGRESO;…` | — | — | 🟨 solo `READY,100` |
@@ -338,7 +338,7 @@ Todo mensaje binario empieza con la misma **cabecera común de 10 bytes**:
 | 2 | 4 | `SEQ` | `SEQ` de la vista que originó el envío |
 | 6 | 4 | `NUM` | 🆕 Número de secuencia de envío (§8.3) |
 
-### 8.1 TILE (`TIPO = 0x01`) — 28 bytes + datos 🔁
+### 8.1 TILE (`TIPO = 0x01`) — 28 bytes + datos ✅
 
 ```
  0     1     2           6           10    11          15          19    20          24          28
@@ -383,7 +383,7 @@ Todo mensaje binario empieza con la misma **cabecera común de 10 bytes**:
 
 Con K = 4 la cabecera mide 91 bytes. Las entradas por tile existen porque la paridad sola no alcanza para reconstruir: el receptor necesita saber **qué** tiles cubre, **cuánto** medía el faltante (para quitar el relleno) y su **CRC** (para verificar que la reconstrucción es correcta).
 
-### 8.3 `NUM`: número de secuencia de envío
+### 8.3 `NUM`: número de secuencia de envío ✅
 
 - El servidor asigna `NUM = 1, 2, 3…` a cada mensaje binario de la conexión, **en el orden en que salen del emisor**, incluidos los que la red simulada descarta.
 - Como TCP entrega en orden, el cliente los recibe crecientes. Un salto (`NUM` recibido > último + 1) significa que la red simulada descartó mensajes: el cliente suma la diferencia a su contador `PERD`.
@@ -460,11 +460,11 @@ Cada mecanismo responde una sola pregunta y no conoce a los demás: el filtro de
 
 ```
 src/pimg/
-├── transporte/              📝 lógica pura, sin sockets ni archivos (probable por separado)
+├── transporte/              🟨 lógica pura, sin sockets ni archivos (probable por separado)
 │   ├── FecXor.java           armado de grupos entrelazados y cálculo de la paridad
 │   ├── ControladorPI.java    tasa R a partir de los reportes
 │   ├── FiltroBloom.java      estructura y hashes (idénticos a los de JS, §13.3)
-│   ├── PlanificadorEDF.java  cola por plazos
+│   ├── PlanificadorEDF.java  cola por plazos ✅
 │   └── RedSimulada.java      pérdida, ancho de banda y latencia artificiales
 └── protocol/SesionPimg.java  orquesta: usa transporte/, tiles/ y websocket/
 web/js/transporte/            📝 fec.js, bloom.js, reportes.js
@@ -760,7 +760,7 @@ Un falso positivo hace que el servidor crea que el cliente tiene un tile que no 
 
 ---
 
-## 14. Mecanismo 4 — Planificación por plazos (EDF) 📝
+## 14. Mecanismo 4 — Planificación por plazos (EDF) ✅
 
 ### 14.1 Problema
 
@@ -788,6 +788,8 @@ Cola de prioridad (montículo binario, `PriorityQueue`) ordenada por plazo: inse
 ### 14.4 Métrica: plazos incumplidos
 
 Al enviar cada mensaje, si `ahora > plazo`, se cuenta como **tarde**. El porcentaje se publica en `CTRL|TARDE` (§12.7). Así se mide si la tasa `R` que fija el PI alcanza para la vista: si `TARDE` sube, el cliente o el enlace no dan abasto.
+
+**Dónde se mide.** Se cuenta como tarde al **tomar** el pedido de la cola, antes de leer el tile del disco y escribirlo en el socket. La demora de un envío lento se refleja en los pedidos siguientes, que salen más tarde, pero no en el propio: el error es, como máximo, el tiempo de enviar un tile. El `DONE` no tiene plazo y no cuenta.
 
 ### 14.5 Relación con el orden de v1
 
@@ -890,7 +892,8 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 - ✅ **Coordenada bajo el cursor:** píxel de la imagen original bajo el mouse, en la barra superior.
 - ✅ **Refinamiento progresivo:** mientras falta un tile se dibuja su ancestro más cercano en caché, ampliado. Así una pérdida nunca deja un hueco vacío.
 - ✅ **Fundido** de 150 ms; **throttling** de un `VIEWPORT` cada 100 ms; decodificación asíncrona con época.
-- 📝 **Recepción v2:** valida cabecera de 28 bytes y `NUM`; cuenta saltos en `PERD`; conserva los datos de los últimos 32 tiles para FEC; reconstruye con las paridades (§11.5).
+- ✅ **Recepción v2:** valida la cabecera de 28 bytes y `NUM`; cuenta saltos en `PERD`.
+- 📝 **FEC en el cliente:** conserva los últimos 32 tiles y reconstruye con las paridades (§11.5).
 - 📝 **Reportes:** `REPORT` cada 100 ms (§12.2).
 - 📝 **Filtro:** construye y envía `BLOOM` según §13.5.
 - 📝 **Re-declaración de vista** según §15.
@@ -1002,8 +1005,8 @@ ImageSource ──franjas de 256 filas──► PyramidBuilder ──tiles──
 |---|---|---|
 | eso1242a TIFF 40K (3.9 GB) | TIFF RGB 8 bits | `ImageIOSource` ✅ |
 | eso1242a (24.6 GB) | PSB | `PsbSource` propio 📝 |
-| Evaluación 93 GB | PNG RGB 8 bits, sin entrelazar, bloques *stored* (sin compresión), 176 393 × 176 393 | `PngSource` propio 📝 |
-| Evaluación 17 / 28 / 55 GB | Presumiblemente iguales — por confirmar | `PngSource` 📝 |
+| Evaluación 93 GB | PNG RGB 8 bits, sin entrelazar, bloques *stored* (sin compresión), 176 393 × 176 393 | `PngSource` propio ✅ |
+| Evaluación 17 / 28 / 55 GB | Iguales: PNG RGB 8 bits; ingestadas con PngSource | `PngSource` ✅ |
 
 **Por qué `PngSource` propio:** el lector del JDK vuelve a descomprimir desde el inicio en cada lectura por región (costo cuadrático). El propio lee el archivo una vez: chunks `IDAT`, `java.util.zip.Inflater`, filtros de fila (None, Sub, Up, Average, Paeth). Una fila de la imagen de 93 GB ocupa 529 180 bytes; una franja, ~135 MB. El formato se detecta por la **firma** del archivo, no por la extensión; los no soportados se rechazan con estado `FAILED`.
 
@@ -1092,10 +1095,10 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 
 | Prioridad | Tarea | Estado |
 |---|---|---|
-| Alta | `PngSource` y prueba con la imagen de 93 GB | 📝 |
-| Alta | Almacenamiento empaquetado + ingesta reanudable | 📝 |
+| Alta | `PngSource` y prueba con la imagen de 93 GB | ✅ |
+| Alta | Almacenamiento empaquetado + ingesta reanudable | ✅ |
 | Alta | Tiles PNG en niveles altos + zoom > 1:1 sin suavizado | ✅ |
-| Alta | Cabecera v2 (`NUM`) + EDF | 📝 |
+| Alta | Cabecera v2 (`NUM`) + EDF | ✅ |
 | Alta | Red simulada + controles en el panel | 📝 |
 | Alta | FEC (servidor y cliente) | 📝 |
 | Alta | `REPORT` + controlador PI + `CTRL` + gráficas | 📝 |
