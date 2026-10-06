@@ -38,6 +38,8 @@ public final class TileEncoderPool {
         this.escritores = ThreadLocal.withInitial(() -> ImageIO.getImageWritersByFormatName(formato).next());
         this.pool = new ThreadPoolExecutor(hilos, hilos, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(capacidadCola),          // cola ACOTADA
+                Thread.ofPlatform().name("codificador-", 0)       // hilos de plataforma (trabajo de CPU)
+                      .daemon().factory(),                        // daemon: si main falla, la JVM termina
                 new ThreadPoolExecutor.CallerRunsPolicy());       // cola llena -> backpressure
     }
 
