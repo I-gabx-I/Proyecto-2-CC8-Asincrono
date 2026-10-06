@@ -23,7 +23,7 @@ public final class SesionPimg implements WebSocketListener {
     /** Algo pendiente de enviar: un tile, o el DONE que cierra un VIEWPORT. Solo coordenadas, no bytes. */
     private record Pedido(Tipo tipo, Catalogo.Imagen img, long seq, int z, int x, int y) {}
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final long MAX_SEQ = 0xFFFF_FFFFL;  // SEQ es uint32
 private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 DONE: cabe la vista máxima
 
@@ -44,6 +44,7 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
     private final Condition hayTrabajo = lockCola.newCondition();
     private final ArrayDeque<Pedido> cola = new ArrayDeque<>();
     private Thread emisor;
+    private long num = 0;                              // NUM (§8.3): solo lo usa el hilo emisor
 
     public SesionPimg(Catalogo catalogo, TileCache cache, int heartbeatSeg, int tamTile) {
         this.catalogo = catalogo;
@@ -295,7 +296,7 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
             return false;
         }
         byte formato = img.formato().equals("PNG") ? TileFrame.FMT_PNG : TileFrame.FMT_JPEG;
-        ws.enviarBinario(TileFrame.construir(p.seq(), p.z(), p.x(), p.y(), formato, datos));
+        ws.enviarBinario(TileFrame.construir(p.seq(), ++num, p.z(), p.x(), p.y(), formato, datos));
         if (img == imagen) {
             enviados.add(new Vista.Tile(p.z(), p.x(), p.y()).clave()); // se marca AL ENVIAR, no al encolar
         }

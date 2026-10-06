@@ -45,7 +45,7 @@ public final class WebSocketHandler implements RequestHandler {
         }
         String clave = req.cabecera("sec-websocket-key");
         if (!claveValida(clave) || !contieneToken(req.cabecera("sec-websocket-protocol"), subprotocolo)) {
-            HttpResponse.enviarError(con.salida(), 400, false); // PROTOCOLO.md §3: sin pimg.v1 -> 400
+            HttpResponse.enviarError(con.salida(), 400, false); // PROTOCOLO.md §4.2: sin pimg.v2 -> 400
             return false;
         }
 

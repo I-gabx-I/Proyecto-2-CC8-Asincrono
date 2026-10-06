@@ -1,5 +1,7 @@
 import { crc32 } from './crc32.js';
 
+const CABECERA = 28;                // PROTOCOLO.md §8.1
+
 /** Cliente del protocolo PIMG sobre WebSocket (PROTOCOLO.md §5 y §6). */
 export class ClientePimg {
   constructor(eventos) {
@@ -8,17 +10,19 @@ export class ClientePimg {
     this.seq = 0;                     // estrictamente creciente por conexión
     this.seqInicioImagen = Infinity;  // tiles con SEQ menor son de una imagen anterior
     this.intentos = 0;
-    this.stats = { bytes: 0, tiles: 0, crcMalos: 0, descartados: 0 };
+    this.ultimoNum = 0;               // último NUM recibido en esta conexión (§8.3)
+    this.stats = { bytes: 0, tiles: 0, crcMalos: 0, descartados: 0, perdidos: 0 };
   }
 
   conectar() {
     // Mismo servidor que entregó la página: ninguna petición externa
-    const ws = new WebSocket(`ws://${location.host}/ws`, 'pimg.v1');
+    const ws = new WebSocket(`ws://${location.host}/ws`, 'pimg.v2');
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       this.intentos = 0;
+      this.ultimoNum = 0;             // conexión nueva: el servidor empieza otra vez en NUM = 1
       this.ev.alEstado('conectado');
-      this.enviar(`HELLO|V:1|CACHE:${this.ev.cacheMax}`);
+      this.enviar(`HELLO|V:2|CACHE:${this.ev.cacheMax}`);
     };
     ws.onmessage = e => (typeof e.data === 'string' ? this.alTexto(e.data) : this.alBinario(e.data));
     ws.onclose = () => {
@@ -98,15 +102,24 @@ export class ClientePimg {
 
   alBinario(buf) {
     this.stats.bytes += buf.byteLength;
-    if (buf.byteLength < 24) { this.stats.descartados++; return; }
+    if (buf.byteLength < CABECERA) { this.stats.descartados++; return; }
 
     const v = new DataView(buf);                 // DataView lee big-endian por defecto
     const ver = v.getUint8(0), tipo = v.getUint8(1);
-    const seq = v.getUint32(2), z = v.getUint8(6), x = v.getUint32(7), y = v.getUint32(11);
-    const fmt = v.getUint8(15), largo = v.getUint32(16), crc = v.getUint32(20);
+    const seq = v.getUint32(2), num = v.getUint32(6);
+    if (ver !== 2) { this.stats.descartados++; return; }
 
-    // Validaciones del receptor (PROTOCOLO.md §6)
-    if (ver !== 1 || tipo !== 1 || (fmt !== 1 && fmt !== 2) || 24 + largo !== buf.byteLength) {
+    // NUM (§8.3) se revisa ANTES que lo demás: un mensaje que llegó no es una pérdida de red,
+    // aunque después se descarte por CRC o por ser de otra imagen (esos tienen su propio contador)
+    if (num > this.ultimoNum + 1) this.stats.perdidos += num - this.ultimoNum - 1;
+    if (num > this.ultimoNum) this.ultimoNum = num;
+
+    if (tipo !== 1) { this.stats.descartados++; return; }      // PARIDAD (0x02) llega en la Fase 6
+    const z = v.getUint8(10), x = v.getUint32(11), y = v.getUint32(15);
+    const fmt = v.getUint8(19), largo = v.getUint32(20), crc = v.getUint32(24);
+
+    // Validaciones del receptor (PROTOCOLO.md §8.4)
+    if ((fmt !== 1 && fmt !== 2) || CABECERA + largo !== buf.byteLength) {
       this.stats.descartados++;
       return;
     }
@@ -114,10 +127,10 @@ export class ClientePimg {
       this.stats.descartados++;
       return;
     }
-    const datos = new Uint8Array(buf, 24, largo);
+    const datos = new Uint8Array(buf, CABECERA, largo);
     if (crc32(datos) !== crc) {                  // integridad extremo a extremo
       this.stats.crcMalos++;
-      this.pedirTile(z, x, y);
+      this.pedirTile(z, x, y);                   // GET_TILE se retira en la Fase 8
       return;
     }
     this.stats.tiles++;
