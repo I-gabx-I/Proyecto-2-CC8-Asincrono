@@ -23,6 +23,10 @@ const cache = new CacheTiles(CACHE_MAX, clave => {
   expulsadosTotal++;
 });
 const visor = new Visor(document.getElementById('lienzo'), cache, () => programarVista());
+const coordEl = document.getElementById('coord');
+visor.onCursor = p => {
+  coordEl.textContent = p ? `x ${p.x.toLocaleString('es')} · y ${p.y.toLocaleString('es')}` : '';
+};
 
 const pimg = new ClientePimg({
   cacheMax: CACHE_MAX,

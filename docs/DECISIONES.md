@@ -151,3 +151,9 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 ### D-35 · Un `TileStore` por imagen, con el índice cargado en RAM al primer uso · 2026-10-05 · Vigente
 - **Por qué:** todas las sesiones comparten el mismo índice (7.6 MB para la imagen de 93 GB); la lectura posicional permite leer en paralelo sin lock.
 - **Limitación conocida:** reingestar una imagen con el mismo id mientras el servidor corre deja al servidor con el índice viejo. Hasta la Fase 9, hay que reiniciar el servidor.
+
+### D-36 · Zoom hasta 16× con vecino más cercano solo al ampliar · 2026-10-05 · Vigente
+- **Contexto:** a 1:1, un dígito de 3×5 px es ilegible en un monitor.
+- **Decisión:** zoom máximo 16× (un dígito ocupa 48×80 px de pantalla). Por encima de 1:1, sin suavizado; por debajo, con suavizado.
+- **Por qué no es "zoom tipo Amazon":** no se interpola ni se inventa detalle; se muestran los píxeles reales del nivel máximo, que llegaron como tiles por el protocolo.
+- **Por qué el suavizado depende del zoom:** al ampliar, suavizar difumina los bordes; al reducir, no suavizar produce aliasing (moiré) en el texto.

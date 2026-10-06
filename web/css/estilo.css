@@ -54,3 +54,9 @@ html, body {
 #panel table { border-collapse: collapse; width: 100%; }
 #panel td { padding: 1px 0; }
 #panel td:last-child { text-align: right; color: #7fd1ff; padding-left: 12px; }
+
+.coord {
+  font-family: ui-monospace, Consolas, monospace;
+  color: #7fd1ff;
+  min-width: 22ch;          /* ancho fijo: la barra no salta al cambiar los números */
+}

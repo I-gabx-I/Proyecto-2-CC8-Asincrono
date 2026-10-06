@@ -886,7 +886,8 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 
 - ✅ **Arranque:** `HELLO → LIST → OPEN` (o `RESUME` 📝 si conserva caché de esa imagen) → `META` → `VIEWPORT`.
 - ✅ **Cámara continua:** centro `(cx, cy)` y `zoom`; nivel `z = clamp(zMax + round(log₂ zoom), 0, zMax)`; zoom animado.
-- 📝 **Zoom > 1:1 sin suavizado** (`imageSmoothingEnabled = false`) para leer dígitos de 3×5 px.
+- ✅ **Zoom hasta 16×** (`ZOOM_MAX`). Por encima de 1:1, vecino más cercano (`imageSmoothingEnabled = false`): cada píxel real del nivel máximo se ve como un bloque, sin inventar detalle. Por debajo de 1:1, con suavizado, para evitar aliasing en el texto.
+- ✅ **Coordenada bajo el cursor:** píxel de la imagen original bajo el mouse, en la barra superior.
 - ✅ **Refinamiento progresivo:** mientras falta un tile se dibuja su ancestro más cercano en caché, ampliado. Así una pérdida nunca deja un hueco vacío.
 - ✅ **Fundido** de 150 ms; **throttling** de un `VIEWPORT` cada 100 ms; decodificación asíncrona con época.
 - 📝 **Recepción v2:** valida cabecera de 28 bytes y `NUM`; cuenta saltos en `PERD`; conserva los datos de los últimos 32 tiles para FEC; reconstruye con las paridades (§11.5).
@@ -905,6 +906,7 @@ PING cada `HB = 15 s`; sin ningún frame del cliente en 30 s → conexión zombi
 | Código | Uso |
 |---|---|
 | 1000 | Cierre normal |
+| 1001 | El cliente se va (recarga o cierra la pestaña); cierre normal |
 | 1002 | Error de protocolo (frame inválido, sin máscara, versión no soportada) |
 | 1003 | El cliente envió un mensaje binario |
 | 1006 | (solo local) Terminó sin intercambio de CLOSE |
@@ -1092,7 +1094,7 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 |---|---|---|
 | Alta | `PngSource` y prueba con la imagen de 93 GB | 📝 |
 | Alta | Almacenamiento empaquetado + ingesta reanudable | 📝 |
-| Alta | Tiles PNG en niveles altos + zoom > 1:1 sin suavizado | 📝 |
+| Alta | Tiles PNG en niveles altos + zoom > 1:1 sin suavizado | ✅ |
 | Alta | Cabecera v2 (`NUM`) + EDF | 📝 |
 | Alta | Red simulada + controles en el panel | 📝 |
 | Alta | FEC (servidor y cliente) | 📝 |
