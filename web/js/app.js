@@ -2,6 +2,7 @@ import { ClientePimg } from './pimg.js';
 import { CacheTiles } from './cache.js';
 import { Visor } from './visor.js';
 import { mostrarPanel } from './panel.js';
+import { GraficaControl } from './grafica.js';
 
 const CACHE_MAX = 300;       // tiles decodificados en memoria (se informa en HELLO)
 const THROTTLE_MS = 100;     // como máximo un VIEWPORT cada 100 ms
@@ -20,6 +21,10 @@ let estadoTexto = 'desconectado';
 let lentoMs = 0;                       // "cliente lento": retardo artificial por tile (§16)
 let turnoDecodificacion = Promise.resolve();
 const simEstadoEl = document.getElementById('simEstado');
+const Q_OBJETIVO = 8;                  // Q* del controlador PI (§12.3)
+const grafica = new GraficaControl(document.getElementById('grafica'));
+const ctrlTextoEl = document.getElementById('ctrlTexto');
+let ultimoCtrl = null;
 
 const cache = new CacheTiles(CACHE_MAX, clave => {
   porExpulsar.push(clave);
@@ -66,12 +71,18 @@ const pimg = new ClientePimg({
 
   alTile: (z, x, y, blob) => {
     const miEpoca = epoca;
+    pimg.reportero.inicioDecodificacion();       // COLA del REPORT: recibido, sin decodificar
     const procesar = async () => {
-      if (lentoMs > 0) await new Promise(r => setTimeout(r, lentoMs));
-      const bmp = await createImageBitmap(blob);   // decodifica fuera del hilo principal
-      if (miEpoca !== epoca) { bmp.close(); return; }
-      cache.poner(`${z},${x},${y}`, bmp);
-      visor.tileLlego(`${z},${x},${y}`);
+      const t0 = performance.now();
+      try {
+        if (lentoMs > 0) await new Promise(r => setTimeout(r, lentoMs));
+        const bmp = await createImageBitmap(blob);   // decodifica fuera del hilo principal
+        if (miEpoca !== epoca) { bmp.close(); return; }
+        cache.poner(`${z},${x},${y}`, bmp);
+        visor.tileLlego(`${z},${x},${y}`);
+      } finally {
+        pimg.reportero.finDecodificacion(performance.now() - t0);
+      }
     };
     if (lentoMs > 0) {
       // Cliente lento: de uno en uno, como un cliente que no da abasto (se acumulan)
@@ -83,6 +94,10 @@ const pimg = new ClientePimg({
 
   alDone: (seq, sent, par) => { ultimoDone = `seq ${seq}: ${sent} tiles + ${par || 0} paridades`; },
   alError: c => { ultimoError = `${c.CODE} ${c.MSG}`; },
+  alCtrl: c => {
+    ultimoCtrl = c;
+    grafica.agregar(c.r, c.q);
+  },
   alSim: s => {
     simEstadoEl.textContent = `aplicado: ${s.perdida} % · ${s.ancho || '∞'} KB/s · ${s.latencia} ms`;
   },
@@ -141,6 +156,9 @@ setInterval(() => {
     'Paridades recibidas': pimg.stats.paridades,
     'Recuperados por FEC (REC)': pimg.stats.recuperados,
     'No recuperables por FEC': pimg.stats.irrecuperables,
+    'Tasa R (PI)': ultimoCtrl ? (ultimoCtrl.r ? `${ultimoCtrl.r} msg/s` : 'sin control (--sin-pi)') : '—',
+    'Ocupacion Q / objetivo': ultimoCtrl ? `${ultimoCtrl.q} / ${Q_OBJETIVO} tiles` : '—',
+    'TARDE (plazos incumplidos)': ultimoCtrl ? `${ultimoCtrl.tarde} %` : '—',
     'Bytes recibidos': `${(pimg.stats.bytes / 2 ** 20).toFixed(2)} MB`,
     'vs. imagen original': m ? `${(100 * pimg.stats.bytes / bytesOriginal).toFixed(3)} %` : '—',
     'Expulsados (EVICT)': expulsadosTotal,
@@ -148,6 +166,8 @@ setInterval(() => {
     'Ultimo DONE': ultimoDone,
     'Ultimo error': ultimoError,
   });
+  const escala = grafica.dibujar(Q_OBJETIVO);
+  ctrlTextoEl.textContent = `R: 0–${Math.round(escala.maxR)} msg/s · Q: 0–${Math.round(escala.maxQ)} tiles · punteada: Q* = ${Q_OBJETIVO}`;
 }, 250);
 
 // ---------- Red simulada y cliente lento ----------

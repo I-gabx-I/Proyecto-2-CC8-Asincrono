@@ -35,7 +35,7 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 | 4 | Cabecera v2 (`NUM`) + planificación EDF | `feat/edf` | ✅ |
 | 5 | Red simulada + controles en el panel | `feat/red-simulada` | ✅ |
 | 6 | FEC con paridad XOR entrelazada | `feat/fec` | ✅ |
-| 7 | Controlador PI (`REPORT`, `CTRL`, gráficas) | `feat/control-pi` | ⬜ |
+| 7 | Controlador PI (`REPORT`, `CTRL`, gráficas) | `feat/control-pi` | ✅ |
 | 8 | Filtros de Bloom, `RESUME` y re-declaración de vista | `feat/bloom-resume` | ⬜ |
 | 9 | ARC, ingesta automática y navegación ("ir a x, y") | `feat/extras` | ⬜ |
 | 10 | Pruebas finales con las 4 imágenes de evaluación | `test/evaluacion` | ⬜ |
@@ -218,16 +218,25 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 
 ---
 
-## Fase 7 — Controlador PI ⬜
+## Fase 7 — Controlador PI ✅
 
 **Referencia:** `PROTOCOLO.md` §12.
 
-- [ ] Cliente: `REPORT` cada 100 ms (`MAX`, `PERD`, `COLA`, `DEC`, `JIT`, `REC`)
-- [ ] `ControladorPI` con anti-windup; pacing en el emisor; `CTRL`
-- [ ] Gráficas de `R` y `Q` en el panel
-- [ ] Sintonía de `Kp` y `Ki` con un escalón de ancho de banda
+- [x] Cliente: `REPORT` cada 100 ms (`MAX`, `PERD`, `COLA`, `DEC`, `JIT`, `REC`)
+- [x] `ControladorPI` con anti-windup; pacing en el emisor; `CTRL`
+- [x] Gráficas de `R` y `Q` en el panel
+- [x] Sintonía de `Kp` y `Ki` con un escalón de ancho de banda
 
 **Criterio:** ante un escalón de ancho de banda, `Q` vuelve a 8; sobrepico y tiempo de establecimiento anotados.
+
+**Evidencia:**
+
+| Prueba | Resultado |
+|---|---|
+| `ProbarPI` | 6/6 OK: saturación y anti-windup, regla de reposo (R = 72 sin inflarse), escalón 200 → 10 tiles/s: Q máx 55.9, establecimiento 7.8 s, Q final 8.0; `Kp = 10` oscila |
+| Sin límites | `R` sube en escalones (solo integra con demanda) hasta ~243 msg/s; Q ≤ 16 |
+| 300 KB/s + 80 ms, con y sin PI | 20 s → **7 s** hasta ver el tile; Q máximo 96 → **24** |
+| Cliente lento 100 ms/tile | `R` baja sola a ~10 msg/s; Q oscila alrededor de 8 |
 
 ---
 
