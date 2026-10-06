@@ -3,12 +3,12 @@ package pimg.protocol;
 import pimg.tiles.Catalogo;
 import pimg.tiles.PyramidLayout;
 import pimg.tiles.TileCache;
+import pimg.transporte.PlanificadorEDF;
 import pimg.websocket.WebSocketConnection;
 import pimg.websocket.WebSocketListener;
 
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
-import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,7 +25,7 @@ public final class SesionPimg implements WebSocketListener {
 
     private static final int VERSION = 2;
     private static final long MAX_SEQ = 0xFFFF_FFFFL;  // SEQ es uint32
-private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 DONE: cabe la vista máxima
+    private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 DONE: cabe la vista máxima
 
     private static final long VISTA_MAX = 4096;        // px: impide pedir un nivel entero de golpe
 
@@ -42,7 +42,7 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
 
     private final ReentrantLock lockCola = new ReentrantLock();
     private final Condition hayTrabajo = lockCola.newCondition();
-    private final ArrayDeque<Pedido> cola = new ArrayDeque<>();
+    private final PlanificadorEDF<Pedido> cola = new PlanificadorEDF<>();   // EDF (§14), protegida por lockCola
     private Thread emisor;
     private long num = 0;                              // NUM (§8.3): solo lo usa el hilo emisor
 
@@ -97,7 +97,7 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
         }
         lockCola.lock();
         try {
-            cola.clear();
+            cola.vaciar();
         } finally {
             lockCola.unlock();
         }
@@ -146,7 +146,7 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
         }
         lockCola.lock();
         try {
-            cola.clear();                          // §5.3: OPEN vacía la cola...
+            cola.vaciar();                         // §7.3: OPEN vacía la cola...
         } finally {
             lockCola.unlock();
         }
@@ -161,6 +161,7 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
     }
 
     private void viewport(Mensaje m) throws PimgException {
+        long t0 = System.nanoTime();               // instante de llegada: base de los plazos (§14.2)
         long seq = m.entero("SEQ", 0, MAX_SEQ);
         if (seq <= seqVigente) {
             return;                                // §5.3: SEQ viejo o repetido -> se ignora
@@ -181,7 +182,7 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
         lockCola.lock();
         try {
             seqVigente = seq;
-            cola.clear();                          // CANCELA todo lo pendiente de vistas anteriores
+            cola.vaciar();                         // CANCELA todo lo pendiente de vistas anteriores
             for (Vista.Tile t : visibles) {
                 if (enviados.contains(t.clave())) {
                     continue;                      // el cliente ya lo tiene
@@ -189,10 +190,12 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
                 if (nuevos == COLA_MAX - 1) {
                     break;                         // vista enorme: se quedan los del centro
                 }
-                cola.addLast(new Pedido(Tipo.TILE, img, seq, t.z(), t.x(), t.y()));
+                double dist = Vista.distancia(p.tile(), t, x, y, vw, vh);
+                cola.agregar(new Pedido(Tipo.TILE, img, seq, t.z(), t.x(), t.y()),
+                        PlanificadorEDF.plazoTile(t0, dist));
                 nuevos++;
             }
-            cola.addLast(new Pedido(Tipo.DONE, img, seq, 0, 0, 0));
+            cola.agregar(new Pedido(Tipo.DONE, img, seq, 0, 0, 0), PlanificadorEDF.SIN_PLAZO);
             hayTrabajo.signal();
         } finally {
             lockCola.unlock();
@@ -212,10 +215,11 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
         }
         lockCola.lock();
         try {
-            if (cola.size() >= COLA_MAX) {
-                cola.pollFirst();                  // §11: cola llena -> se descarta el más antiguo
+            if (cola.tamanio() >= COLA_MAX) {
+                return;                            // cola llena: se ignora (GET_TILE se retira en la Fase 8)
             }
-            cola.addLast(new Pedido(Tipo.TILE, img, seq, z, x, y)); // se envía aunque ya se haya enviado
+            // Reenvío urgente: plazo como el de un tile en el centro de la vista
+            cola.agregar(new Pedido(Tipo.TILE, img, seq, z, x, y), PlanificadorEDF.plazoTile(System.nanoTime(), 0));
             hayTrabajo.signal();
         } finally {
             lockCola.unlock();
@@ -245,7 +249,7 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
         long seq = m.entero("SEQ", 0, MAX_SEQ);
         lockCola.lock();
         try {
-            cola.removeIf(p -> p.seq() <= seq);    // §5.3: descarta todo con SEQ <= el indicado
+            cola.quitarSi(p -> p.seq() <= seq);    // §7.3: descarta todo con SEQ <= el indicado
         } finally {
             lockCola.unlock();
         }
@@ -256,28 +260,39 @@ private static final int COLA_MAX = 300;           // ≥ (4096/256 + 1)² + 1 D
     private void bucleEmisor() {
         long seqContado = -1;
         int enviadosEnSeq = 0;
+        int tardeEnSeq = 0;
         try {
             while (true) {
-                Pedido p;
+                PlanificadorEDF.Turno<Pedido> turno;
+                long tardesTotal, atendidosTotal;
                 lockCola.lock();
                 try {
-                    while (cola.isEmpty()) {
+                    while (cola.estaVacia()) {
                         hayTrabajo.await();        // duerme sin gastar CPU hasta que haya trabajo
                     }
-                    p = cola.pollFirst();
+                    turno = cola.extraer(System.nanoTime());   // el de plazo más próximo (§14.2)
+                    tardesTotal = cola.tardes();
+                    atendidosTotal = cola.atendidos();
                 } finally {
                     lockCola.unlock();
                 }
+                Pedido p = turno.trabajo();
 
                 if (p.seq() != seqContado) {
                     seqContado = p.seq();
                     enviadosEnSeq = 0;
+                    tardeEnSeq = 0;
                 }
                 if (p.tipo() == Tipo.DONE) {
                     enviar(Mensaje.de("DONE").con("SEQ", p.seq()).con("SENT", enviadosEnSeq));
-                    log(String.format("DONE seq=%d SENT=%d | %s", p.seq(), enviadosEnSeq, cache.estadisticas()));
+                    log(String.format("DONE seq=%d SENT=%d TARDE=%d | sesion: %d de %d tarde (%.1f %%) | %s",
+                            p.seq(), enviadosEnSeq, tardeEnSeq, tardesTotal, atendidosTotal,
+                            atendidosTotal == 0 ? 0.0 : 100.0 * tardesTotal / atendidosTotal, cache.estadisticas()));
                 } else if (enviarTile(p)) {
                     enviadosEnSeq++;
+                    if (turno.tarde()) {
+                        tardeEnSeq++;
+                    }
                 }
             }
         } catch (InterruptedException | IOException e) {

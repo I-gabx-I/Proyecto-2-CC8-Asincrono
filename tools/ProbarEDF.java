@@ -1,3 +1,5 @@
+import pimg.protocol.Vista;
+import pimg.tiles.PyramidLayout;
 import pimg.transporte.PlanificadorEDF;
 import pimg.transporte.PlanificadorEDF.Turno;
 
@@ -23,6 +25,7 @@ public class ProbarEDF {
         cancelar();
         aleatorio();
         rendimiento();
+        mismoOrdenQueV1();
         System.out.printf("%n%s%n", fallos == 0 ? "TODAS LAS PRUEBAS OK" : fallos + " PRUEBA(S) FALLARON");
     }
 
@@ -103,6 +106,34 @@ public class ProbarEDF {
         }
         double nsPorTrabajo = (System.nanoTime() - t0) / (double) (reps * 300L);
         System.out.printf("8. Rendimiento: %.0f ns por trabajo (agregar + extraer, cola de 300)%n", nsPorTrabajo);
+    }
+
+    /**
+     * §14.5: con una sola vista, EDF envía en el MISMO orden que v1 (del centro hacia afuera).
+     * 10 000 vistas al azar sobre la pirámide de la imagen de 4 GB: los tiles se encolan como lo hará
+     * SesionPimg (orden de Vista + plazo por distancia) y se compara lo extraído con la lista de v1.
+     */
+    private static void mismoOrdenQueV1() {
+        PyramidLayout pir = new PyramidLayout(36743, 36743, 256);
+        Random r = new Random(1);
+        int distintas = 0, tilesTotal = 0;
+        for (int rep = 0; rep < 10_000; rep++) {
+            int z = r.nextInt(pir.niveles());
+            long vw = 1 + r.nextInt(4096), vh = 1 + r.nextInt(4096);
+            long x = r.nextInt(pir.ancho(z) + 4096) - 4096, y = r.nextInt(pir.alto(z) + 4096) - 4096;
+            List<Vista.Tile> v1 = Vista.tilesVisibles(pir, z, x, y, vw, vh);
+
+            PlanificadorEDF<Vista.Tile> edf = new PlanificadorEDF<>();
+            for (Vista.Tile t : v1) {
+                edf.agregar(t, PlanificadorEDF.plazoTile(0, Vista.distancia(pir.tile(), t, x, y, vw, vh)));
+            }
+            List<Vista.Tile> orden = new ArrayList<>();
+            while (!edf.estaVacia()) orden.add(edf.extraer(0).trabajo());
+            if (!orden.equals(v1)) distintas++;
+            tilesTotal += v1.size();
+        }
+        comprobar("9. Mismo orden que v1 (10 000 vistas)", "0 distintas", distintas + " distintas");
+        System.out.printf("   (%d tiles comparados)%n", tilesTotal);
     }
 
     // ---------- utilidades ----------
