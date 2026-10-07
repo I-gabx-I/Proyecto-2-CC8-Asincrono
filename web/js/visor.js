@@ -265,24 +265,50 @@ export class Visor {
 
   registrarEntrada() {
     const c = this.canvas;
-    let ultimo = null;
+    // Punteros presionados (mouse, dedos): uno arrastra; dos hacen pellizco (zoom en pantallas táctiles)
+    const punteros = new Map();
+    let distancia = 0;
+    const separacion = () => {
+      const [a, b] = [...punteros.values()];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
 
     c.addEventListener('pointerdown', e => {
-      ultimo = { x: e.clientX, y: e.clientY };
-      c.setPointerCapture(e.pointerId);
+      punteros.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      try { c.setPointerCapture(e.pointerId); } catch { /* puntero ya liberado */ }
+      if (punteros.size === 2) distancia = separacion();
     });
     c.addEventListener('pointermove', e => {
       if (this.onCursor) {
         const r = c.getBoundingClientRect();
         this.onCursor(this.coordenadaEn(e.clientX - r.left, e.clientY - r.top));
       }
-      if (!ultimo) return;
-      this.mover(ultimo.x - e.clientX, ultimo.y - e.clientY);
-      ultimo = { x: e.clientX, y: e.clientY };
+      const antes = punteros.get(e.pointerId);
+      if (!antes) return;
+      punteros.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (punteros.size === 1) {
+        this.mover(antes.x - e.clientX, antes.y - e.clientY);
+      } else if (punteros.size === 2 && this.meta) {
+        const d = separacion();
+        if (distancia > 0 && d > 0) {
+          // Pellizco: el zoom cambia en la proporción en que cambió la separación de los dedos,
+          // con el punto medio entre ellos fijo en pantalla (igual que el cursor con la rueda)
+          const [a, b] = [...punteros.values()];
+          const r = c.getBoundingClientRect();
+          this.ancla = { x: (a.x + b.x) / 2 - r.left, y: (a.y + b.y) / 2 - r.top };
+          this.zoomObjetivo = this.limitarZoom(this.zoomObjetivo * d / distancia);
+          this.solicitarDibujo();
+        }
+        distancia = d;
+      }
     });
+    const soltar = e => {
+      punteros.delete(e.pointerId);
+      distancia = punteros.size === 2 ? separacion() : 0;
+    };
     c.addEventListener('pointerleave', () => { if (this.onCursor) this.onCursor(null); });
-    c.addEventListener('pointerup', () => { ultimo = null; });
-    c.addEventListener('pointercancel', () => { ultimo = null; });
+    c.addEventListener('pointerup', soltar);
+    c.addEventListener('pointercancel', soltar);
 
     c.addEventListener('wheel', e => {
       e.preventDefault();

@@ -219,6 +219,10 @@ setInterval(() => {
   ctrlTextoEl.textContent = `R: 0–${Math.round(escala.maxR)} msg/s · Q: 0–${Math.round(escala.maxQ)} tiles · punteada: Q* = ${Q_OBJETIVO}`;
 }, 250);
 
+// ---------- Paneles: en pantallas chicas empiezan ocultos para no tapar la imagen ----------
+if (window.matchMedia('(max-width: 800px)').matches) document.body.classList.add('sin-paneles');
+document.getElementById('panelesBoton').addEventListener('click', () => document.body.classList.toggle('sin-paneles'));
+
 // ---------- Ir a x, y ----------
 const irX = document.getElementById('irX');
 const irY = document.getElementById('irY');

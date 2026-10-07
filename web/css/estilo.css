@@ -119,3 +119,10 @@ html, body {
   border: 1px solid #2a2f3a;
   border-radius: 4px;
 }
+
+/* Paneles ocultables: en un teléfono tapan la imagen (en pantallas chicas empiezan ocultos) */
+body.sin-paneles #panel, body.sin-paneles #control, body.sin-paneles #red { display: none; }
+@media (max-width: 800px) {
+  #barra { right: 12px; flex-wrap: wrap; gap: 6px; }
+  .ayuda { display: none; }
+}
