@@ -3,6 +3,7 @@ package pimg;
 import pimg.http.HttpServer;
 import pimg.http.Router;
 import pimg.http.StaticFileHandler;
+import pimg.ingest.IngestaAutomatica;
 import pimg.protocol.SesionPimg;
 import pimg.tiles.Catalogo;
 import pimg.tiles.TileCache;
@@ -42,6 +43,7 @@ public class Main {
         System.out.println("Red simulada: " + (simulada ? "ACTIVADA (--sim)" : "desactivada"));
         System.out.println("Control de ritmo PI: " + (conPI ? "activado" : "DESACTIVADO (--sin-pi)"));
         System.out.println("Cache del servidor: " + (usarLru ? "LRU (--lru, solo para comparar)" : "ARC"));
+        new IngestaAutomatica(Path.of("data", "entrada"), Path.of("data", "tiles"), catalogo).iniciar();   // §22.4
 
         // Una SesionPimg NUEVA por cada conexión WebSocket
         WebSocketHandler ws = new WebSocketHandler("pimg.v2",

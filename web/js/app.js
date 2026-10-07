@@ -28,6 +28,8 @@ const Q_OBJETIVO = 8;                  // Q* del controlador PI (§12.3)
 const grafica = new GraficaControl(document.getElementById('grafica'));
 const ctrlTextoEl = document.getElementById('ctrlTexto');
 let ultimoCtrl = null;
+let estadosLista = new Map();          // id -> READY / PROCESSING / FAILED, según el último LIST_RESP
+let temporizadorLista = null;
 
 const cache = new CacheTiles(CACHE_MAX, () => {
   expulsadosTotal++;
@@ -48,20 +50,31 @@ const pimg = new ClientePimg({
     estadoEl.textContent = texto;
   },
 
-  alLista: lista => {
+  alLista: (lista, inicial) => {
+    const antes = estadosLista;
+    estadosLista = new Map(lista.map(i => [i.id, i.estado]));
     selector.replaceChildren();
     for (const img of lista) {
       const op = document.createElement('option');
       op.value = img.id;
-      op.textContent = img.estado === 'READY' ? img.id : `${img.id} (${img.estado} ${img.progreso}%)`;
+      op.textContent = img.estado === 'READY' ? img.id
+        : img.estado === 'PROCESSING' ? `${img.id} (procesando ${img.progreso} %)` : `${img.id} (fallo la ingesta)`;
       op.disabled = img.estado !== 'READY';
       selector.appendChild(op);
     }
     const id = imagenActual ?? lista.find(i => i.estado === 'READY')?.id;
-    if (id) {
-      selector.value = id;
-      abrir(id, true);       // también sirve para reabrir tras una reconexión
+    if (id) selector.value = id;
+    if (inicial && id) {
+      abrir(id, true);                 // primera lista de la conexión: también reabre tras una reconexión
+    } else if (!imagenActual && id) {
+      abrir(id);                       // no había ninguna imagen lista y ya apareció una
+    } else if (imagenActual && antes.get(imagenActual) !== 'READY' && estadosLista.get(imagenActual) === 'READY') {
+      abrir(imagenActual);             // terminó de regenerarse: OPEN desde cero, sin los tiles viejos (§22.4)
     }
+    // §22.4: la lista se vuelve a pedir, más seguido mientras haya una ingesta en curso
+    clearTimeout(temporizadorLista);
+    temporizadorLista = setTimeout(() => pimg.pedirLista(),
+      lista.some(i => i.estado === 'PROCESSING') ? 2000 : 10000);
   },
 
   alMeta: meta => {

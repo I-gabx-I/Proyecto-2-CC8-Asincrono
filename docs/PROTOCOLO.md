@@ -275,7 +275,7 @@ El valor empieza tras el **primer** `:`. Clave repetida → `400`. Orden libre. 
 | `HELLO` | C→S | `V` (=2), `CACHE` (1–1 000 000) | `CONNECTED` | `HELLO_OK` o `ERROR` | ✅ |
 | `HELLO_OK` | S→C | `V`, `HB` (s), `TS` (px), `BM` (bits del filtro), `BK` (hashes), `RPT` (ms entre reportes) | — | — | ✅ |
 | `LIST` | C→S | — | `READY`, `IMAGE_OPEN` | `LIST_RESP` | ✅ |
-| `LIST_RESP` | S→C | `IMGS` = `id,ESTADO,PROGRESO;…` | — | — | 🟨 solo `READY,100` |
+| `LIST_RESP` | S→C | `IMGS` = `id,ESTADO,PROGRESO;…` | — | — | ✅ |
 | `OPEN` | C→S | `IMG` | `READY`, `IMAGE_OPEN` | `META` o `ERROR` | ✅ |
 | `RESUME` | C→S | `IMG`, `SEM`, `BITS` | `READY` | `META` o `ERROR` | ✅ |
 | `META` | S→C | `IMG`, `W`, `H`, `TS`, `L`, `FMT`, `RES` (0 = nueva, 1 = reanudada) | — | — | ✅ |
@@ -971,7 +971,7 @@ PING cada `HB = 15 s`; sin ningún frame del cliente en 30 s → conexión zombi
 | 400 | `MALFORMED` | Sintaxis inválida, campo faltante o fuera de rango, `BITS` de tamaño incorrecto, comando desconocido | No | ✅ |
 | 403 | `SIM_DISABLED` | `SIM` sin haber iniciado el servidor con `--sim` | No | ✅ |
 | 404 | `IMAGE_NOT_FOUND` | `OPEN`/`RESUME` con imagen inexistente | No | ✅ |
-| 409 | `IMAGE_NOT_READY` | Imagen en `PROCESSING` o `FAILED` | No | 📝 |
+| 409 | `IMAGE_NOT_READY` | Imagen en `PROCESSING` o `FAILED` | No | ✅ |
 | 412 | `INVALID_STATE` | Comando no permitido en el estado actual | No | ✅ |
 | 416 | `OUT_OF_RANGE` | `z`, `x` o `y` fuera de la pirámide | No | ✅ |
 | 426 | `VERSION_UNSUPPORTED` | Versión en `HELLO` distinta de 2 | Sí (1002) | 🔁 |
@@ -1054,6 +1054,18 @@ ImageSource ──franjas de 256 filas──► PyramidBuilder ──tiles──
 | Evaluación 17 / 28 / 55 GB | Iguales: PNG RGB 8 bits; ingestadas con PngSource | `PngSource` ✅ |
 
 **Por qué `PngSource` propio:** el lector del JDK vuelve a descomprimir desde el inicio en cada lectura por región (costo cuadrático). El propio lee el archivo una vez: chunks `IDAT`, `java.util.zip.Inflater`, filtros de fila (None, Sub, Up, Average, Paeth). Una fila de la imagen de 93 GB ocupa 529 180 bytes; una franja, ~135 MB. El formato se detecta por la **firma** del archivo, no por la extensión; los no soportados se rechazan con estado `FAILED`.
+
+### 22.4 Ingesta automática ✅
+
+`pimg.ingest.IngestaAutomatica` vigila `data/entrada` con `WatchService` (D-44):
+
+1. **Detección.** Un archivo nuevo aparece en `LIST_RESP` como `PROCESSING,0`. Al arrancar el servidor se procesan los archivos de `data/entrada` sin pirámide.
+2. **Fin de la copia.** Se espera a que pasen 5 s sin eventos y a que ningún otro programa tenga el archivo abierto para escribir. Si su huella (tamaño, fecha) es la de una versión ya ingestada, se ignora.
+3. **Ingesta.** Proceso aparte `java -Xmx4g … IngestMain <archivo> <id>`, de uno en uno. El % sale de sus líneas `Franja i/n` (máximo 99 hasta escribir `meta.json`); la consola muestra el tiempo restante estimado.
+4. **Resultado.** Termina bien → `READY`. Si falla (formato no soportado por firma, memoria, disco) → `FAILED`. Abrir una imagen `PROCESSING` o `FAILED` → `409`.
+5. **Reingesta.** La imagen pasa a `PROCESSING`, se cierran sus `.pack` y se borra su `meta.json`. Mientras tanto, `VIEWPORT` responde `409`. Al terminar, el servidor la reabre con `META RES:0` y el cliente descarta sus tiles.
+
+El id es el nombre del archivo sin extensión, con los caracteres fuera de `[A-Za-z0-9_-]` cambiados por `_`.
 
 ---
 
@@ -1149,7 +1161,7 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 | Alta | `REPORT` + controlador PI + `CTRL` + gráficas | ✅ |
 | Alta | Bloom + `RESUME` + re-declaración (retira `EVICT` y `GET_TILE`) | ✅ |
 | Media | ARC en servidor (LRU como opción) | ✅ |
-| Media | Ingesta automática (`WatchService`, `PROCESSING` con %) | 📝 |
+| Media | Ingesta automática (`WatchService`, `PROCESSING` con %) | ✅ |
 | Media | Coordenadas bajo el cursor e "ir a x, y" | ✅ |
 | Final | Pruebas con JDK 21 sin internet, varios clientes; documento final | 📝 |
 

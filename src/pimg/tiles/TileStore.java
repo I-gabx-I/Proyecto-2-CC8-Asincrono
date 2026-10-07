@@ -3,6 +3,8 @@ package pimg.tiles;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedByInterruptException;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -48,6 +50,7 @@ public final class TileStore {
     // ---- Estado de lectura (servidor): se carga la primera vez que se pide un tile ----
     private final ReentrantLock lockCarga = new ReentrantLock();
     private volatile boolean cargado = false;
+    private volatile boolean cerrado = false;     // reingesta en curso: no volver a abrir los archivos (§22.4)
     private FileChannel[] packsLectura;
     private int[] columnasLectura;
     private long[][] offsetsLectura;
@@ -135,6 +138,9 @@ public final class TileStore {
      * la lectura posicional no mueve un cursor compartido, así que no necesita lock.
      */
     public byte[] leer(int z, int x, int y) throws IOException {
+        if (cerrado) {
+            throw new ClosedChannelException();           // la imagen se está regenerando
+        }
         cargarIndices();
         if (z < 0 || z >= packsLectura.length) {
             throw new NoSuchFileException("Nivel inexistente: " + z);
@@ -144,16 +150,68 @@ public final class TileStore {
         if (largo == 0) {
             throw new NoSuchFileException("Tile no escrito: " + z + "," + x + "," + y);
         }
+        for (int intento = 0; ; intento++) {
+            FileChannel canal = packsLectura[z];
+            try {
+                return leerDe(canal, offsetsLectura[z][i], largo, z);
+            } catch (ClosedByInterruptException e) {
+                throw e;                   // ESTE hilo fue interrumpido (su sesión se cerró): no se reintenta
+            } catch (ClosedChannelException e) {
+                // Otra sesión cerró el canal COMPARTIDO: Java cierra un FileChannel cuando se interrumpe
+                // a un hilo que está leyendo de él (al cerrar una pestaña se interrumpe a su emisor).
+                if (cerrado || intento == 2) {
+                    throw e;
+                }
+                reabrir(z, canal);
+            }
+        }
+    }
+
+    private static byte[] leerDe(FileChannel canal, long offset, int largo, int z) throws IOException {
         ByteBuffer buf = ByteBuffer.allocate(largo);
-        long p = offsetsLectura[z][i];
+        long p = offset;
         while (buf.hasRemaining()) {
-            int n = packsLectura[z].read(buf, p);
+            int n = canal.read(buf, p);
             if (n < 0) {
                 throw new EOFException("Pack truncado en el nivel " + z);
             }
             p += n;
         }
         return buf.array();
+    }
+
+    /** Reabre el .pack del nivel z, solo si nadie lo reabrió ya y la imagen no se está regenerando. */
+    private void reabrir(int z, FileChannel cerradoAntes) throws IOException {
+        lockCarga.lock();
+        try {
+            if (!cerrado && packsLectura[z] == cerradoAntes) {
+                packsLectura[z] = FileChannel.open(carpeta.resolve(z + ".pack"), READ);
+            }
+        } finally {
+            lockCarga.unlock();      // el lock también publica el canal nuevo a los demás hilos
+        }
+    }
+
+    /**
+     * Antes de una reingesta (§22.4): cierra los .pack abiertos para leer. Las lecturas que sigan en curso
+     * fallan con IOException, y ninguna vuelve a cargar los índices a medio escribir de la ingesta nueva.
+     */
+    public void cerrarLectura() {
+        lockCarga.lock();
+        try {
+            cerrado = true;
+            if (cargado) {
+                for (FileChannel c : packsLectura) {
+                    try {
+                        c.close();
+                    } catch (IOException e) {
+                        // se está cerrando de todos modos
+                    }
+                }
+            }
+        } finally {
+            lockCarga.unlock();
+        }
     }
 
     /**
@@ -168,6 +226,9 @@ public final class TileStore {
         try {
             if (cargado) {
                 return;
+            }
+            if (cerrado) {
+                throw new ClosedChannelException();
             }
             List<FileChannel> canales = new ArrayList<>();
             List<long[]> offs = new ArrayList<>();

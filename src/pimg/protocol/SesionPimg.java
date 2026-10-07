@@ -11,7 +11,6 @@ import pimg.websocket.WebSocketConnection;
 import pimg.websocket.WebSocketListener;
 
 import java.io.IOException;
-import java.nio.file.NoSuchFileException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -154,11 +153,11 @@ public final class SesionPimg implements WebSocketListener {
     private void list() throws PimgException, IOException {
         StringBuilder imgs = new StringBuilder();
         try {
-            for (Catalogo.Imagen i : catalogo.listar()) {
+            for (Catalogo.Entrada e : catalogo.listar()) {
                 if (imgs.length() > 0) {
                     imgs.append(';');
                 }
-                imgs.append(i.id()).append(",READY,100");
+                imgs.append(e.id()).append(',').append(e.estado()).append(',').append(e.progreso());
             }
         } catch (IOException e) {
             throw new PimgException(PimgException.INTERNAL, "No se pudo leer el catalogo");
@@ -178,6 +177,10 @@ public final class SesionPimg implements WebSocketListener {
     }
 
     private void abrir(String id, FiltroBloom inicial, boolean reanudada) throws PimgException, IOException {
+        String noLista = catalogo.estadoNoListo(id);
+        if (noLista != null) {
+            throw new PimgException(PimgException.IMAGE_NOT_READY, "Imagen " + id + " en estado " + noLista);
+        }
         Catalogo.Imagen img;
         try {
             img = catalogo.buscar(id);
@@ -202,6 +205,35 @@ public final class SesionPimg implements WebSocketListener {
         enviar(Mensaje.de("META").con("IMG", id).con("W", p.anchoOriginal()).con("H", p.altoOriginal())
                 .con("TS", p.tile()).con("L", p.niveles()).con("FMT", img.formato()).con("RES", reanudada ? 1 : 0));
         log(reanudada ? "RESUME " + id + " | filtro con " + inicial.bitsEncendidos() + " bits en 1" : "OPEN " + id);
+    }
+
+    /**
+     * Reingesta con el servidor corriendo (§22.4): mientras la imagen abierta se regenera, VIEWPORT responde 409.
+     * Cuando ya se regeneró, se reabre como nueva (META con RES 0) para que el cliente descarte sus tiles viejos.
+     */
+    private Catalogo.Imagen imagenVigente() throws PimgException, IOException {
+        String id = imagen.id();
+        String noLista = catalogo.estadoNoListo(id);
+        if (noLista != null) {
+            lockCola.lock();
+            try {
+                cola.vaciar();                     // lo pendiente de la imagen vieja ya no se puede leer
+            } finally {
+                lockCola.unlock();
+            }
+            throw new PimgException(PimgException.IMAGE_NOT_READY, "Imagen " + id + " en estado " + noLista);
+        }
+        Catalogo.Imagen actual;
+        try {
+            actual = catalogo.buscar(id);
+        } catch (IOException e) {
+            throw new PimgException(PimgException.INTERNAL, "No se pudo leer la imagen " + id);
+        }
+        if (actual != null && actual != imagen) {
+            log("la imagen " + id + " se regenero: se reabre desde cero");
+            abrir(id, new FiltroBloom(0), false);
+        }
+        return imagen;
     }
 
     /** BLOOM (§13.4): reemplaza el filtro y olvida lo enviado con NUM ≤ MAX; desde ahora eso lo decide el filtro. */
@@ -245,13 +277,13 @@ public final class SesionPimg implements WebSocketListener {
         return filtro.contiene(t.z(), t.x(), t.y()) || enviadosRecientes.containsKey(t.clave());
     }
 
-    private void viewport(Mensaje m) throws PimgException {
+    private void viewport(Mensaje m) throws PimgException, IOException {
         long t0 = System.nanoTime();               // instante de llegada: base de los plazos (§14.2)
         long seq = m.entero("SEQ", 0, MAX_SEQ);
         if (seq <= seqVigente) {
             return;                                // §5.3: SEQ viejo o repetido -> se ignora
         }
-        Catalogo.Imagen img = imagen;
+        Catalogo.Imagen img = imagenVigente();
         PyramidLayout p = img.piramide();
         int z = (int) m.entero("Z", 0, 255);
         if (z >= p.niveles()) {
@@ -445,8 +477,8 @@ public final class SesionPimg implements WebSocketListener {
         Catalogo.Imagen img = p.img();
         byte[] datos;
         try {
-            datos = cache.obtener(img.id(), img.almacen(), p.z(), p.x(), p.y());
-        } catch (NoSuchFileException e) {
+            datos = cache.obtener(img.claveCache(), img.almacen(), p.z(), p.x(), p.y());
+        } catch (IOException e) {                  // no existe, o la imagen se está regenerando (§22.4)
             enviar(Mensaje.de("ERROR").con("CODE", PimgException.INTERNAL)
                     .con("MSG", "Tile no disponible: " + p.z() + "," + p.x() + "," + p.y()));
             return false;
@@ -474,10 +506,10 @@ public final class SesionPimg implements WebSocketListener {
         List<byte[]> datos = new ArrayList<>();
         for (Vista.Tile t : p.grupo()) {
             try {
-                byte[] d = cache.obtenerSinUso(img.id(),img.almacen(), t.z(), t.x(), t.y());
+                byte[] d = cache.obtenerSinUso(img.claveCache(), img.almacen(), t.z(), t.x(), t.y());
                 miembros.add(new TileFrame.Miembro(t.z(), t.x(), t.y(), formato, d));
                 datos.add(d);
-            } catch (NoSuchFileException e) {
+            } catch (IOException e) {
                 // §11.4: un miembro que no se pudo leer se excluye de la paridad
             }
         }
