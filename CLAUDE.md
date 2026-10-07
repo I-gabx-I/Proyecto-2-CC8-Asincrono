@@ -31,9 +31,11 @@ src/pimg/
 │                        por Bloom), Enlace (salida directa o red simulada), Mensaje, TileFrame (binario 28 B +
 │                        CRC32, TILE y PARIDAD), Vista (tiles visibles y distancia), PimgException
 ├── tiles/               PyramidLayout (matemática, compartida), TileStore (formato en disco),
-│                        Catalogo (lee meta.json), TileCache (LRU compartida en bytes)
+│                        Catalogo (lee meta.json), TileCache (ARC compartida en bytes; CacheArc,
+│                        CacheLru con --lru, PoliticaCache)
 └── ingest/              IngestMain, ImageSource (interfaz), ImageIOSource, PyramidBuilder (cascada),
-                         Reductor (2x2), TileEncoderPool (hilos de plataforma + backpressure), Franja
+                         Reductor (2x2), TileEncoderPool (hilos de plataforma + backpressure), Franja,
+                         IngestaAutomatica (WatchService sobre data/entrada, ingesta en proceso aparte)
 web/js/                  app.js (composición, re-declaración de vista), pimg.js (protocolo), visor.js (cámara
                          continua, relleno con ancestros, fundido), cache.js (LRU con close), crc32.js, panel.js,
                          grafica.js (R y Q del PI)
@@ -53,6 +55,7 @@ web/js/transporte/       fec.js, bloom.js, reportes.js
 .\run.bat --sim --sin-pi                       # experimento: sin control de ritmo (comparación con PI)
 java -cp "out;tools\out" ProbarEDF             # también ProbarRed, ProbarFec, ProbarPI, ProbarBloom
 .\ingest.bat data\input\<archivo> <id>         # pirámide en data/tiles/<id>/
+                                               # o copiar el archivo a data\entrada con el servidor corriendo (ingesta automática)
 .\ingest.bat --plan <ancho> <alto>             # solo calcula niveles y tiles
 java -cp tools\out PngInfo "<ruta.png>"        # cabecera de un PNG
 ```
@@ -79,6 +82,7 @@ En PowerShell: los `.bat` se ejecutan con `.\`, y curl es `curl.exe` (`curl` es 
 - El cliente acepta todos los tiles válidos de la imagen actual; descartarlos desincroniza el registro del servidor.
 - En localhost no hay pérdidas ni congestión: para demostrar FEC y el controlador PI hace falta el modo de red simulada.
 - Los hashes del filtro de Bloom deben coincidir bit a bit entre Java y JS: usar los vectores de prueba de `docs/PROTOCOLO.md` §13.3 (en JS, `Math.imul` y `>>> 0`; en Java, `Integer.remainderUnsigned`).
+- Interrumpir un hilo que lee de un FileChannel lo cierra para todos: TileStore reabre el canal (D-45). No compartir canales sin manejar ClosedChannelException.
 
 ## 7. Estado y próximos pasos
 
@@ -92,8 +96,9 @@ Funcional y probado (fases 1 a 8, todas en `main`): ingesta en cascada, HTTP/Web
 6. ✅ `feat/fec`: paridad XOR entrelazada (§11).
 7. ✅ `feat/control-pi`: `REPORT`, controlador PI, `CTRL` y gráficas (§12).
 8. ✅ `feat/bloom-resume`: filtro de Bloom, `RESUME` y re-declaración de vista; retirado `EVICT` y `GET_TILE` (§13, §15).
-9. **Siguiente:** ARC en el servidor, ingesta automática (`WatchService`), coordenadas / "ir a x, y".
-10. Pruebas finales con JDK 21 sin internet y documento final estilo RFC 9293.
+9. ✅ `feat/extras`: ARC en el servidor, ingesta automática (`WatchService`, D-44), coordenadas / "ir a x, y".
+10. **Siguiente:** pruebas finales con JDK 21 sin internet.
+11. Documento final estilo RFC 9293.
 
 ## 8. Cómo colaborar con el equipo
 

@@ -119,6 +119,11 @@ export class ClientePimg {
     }, this.rpt);
   }
 
+  /** LIST periódico: muestra las imágenes nuevas y el avance de las que se están ingestando (§22.4). */
+  pedirLista() {
+    this.enviar('LIST');
+  }
+
   simular(perd, bw, lat) {
     this.enviar(`SIM|PERD:${perd}|BW:${bw}|LAT:${lat}`);
   }
@@ -136,6 +141,7 @@ export class ClientePimg {
       case 'HELLO_OK':
         this.rpt = +c.RPT || 100;
         if (+c.BM !== M || +c.BK !== K) console.warn('PIMG: parametros del filtro distintos', c.BM, c.BK);
+        this.listaInicial = true;      // la primera lista de cada conexión decide qué imagen abrir
         this.enviar('LIST');
         break;
       case 'LIST_RESP': {
@@ -143,10 +149,12 @@ export class ClientePimg {
           const [id, estado, progreso] = s.split(',');
           return { id, estado, progreso: Number(progreso) };
         });
-        this.ev.alLista(lista);
+        this.ev.alLista(lista, this.listaInicial);
+        this.listaInicial = false;
         break;
       }
       case 'META':
+        if (c.RES !== '1') this.fec.vaciar();   // imagen nueva o regenerada (§22.4): sus tiles viejos no sirven para reconstruir
         this.iniciarReportes();
         this.ev.alMeta({ id: c.IMG, ancho: +c.W, alto: +c.H, tile: +c.TS, niveles: +c.L, formato: c.FMT,
                          reanudada: c.RES === '1' });

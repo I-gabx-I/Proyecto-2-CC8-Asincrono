@@ -37,7 +37,7 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 | 6 | FEC con paridad XOR entrelazada | `feat/fec` | ✅ |
 | 7 | Controlador PI (`REPORT`, `CTRL`, gráficas) | `feat/control-pi` | ✅ |
 | 8 | Filtros de Bloom, `RESUME` y re-declaración de vista | `feat/bloom-resume` | ✅ |
-| 9 | ARC, ingesta automática y navegación ("ir a x, y") | `feat/extras` | ⬜ |
+| 9 | ARC, ingesta automática y navegación ("ir a x, y") | `feat/extras` | ✅ |
 | 10 | Pruebas finales con las 4 imágenes de evaluación | `test/evaluacion` | ⬜ |
 | 11 | Documento final y preparación de la defensa | `docs/final` | ⬜ |
 
@@ -266,13 +266,17 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 
 ---
 
-## Fase 9 — Extras ⬜
+## Fase 9 — Extras ✅
 
-- [ ] ARC en `TileCache` (LRU como opción para comparar)
-- [ ] Ingesta automática con `WatchService` (`PROCESSING` con %, `FAILED`)
-- [ ] Barra de progreso de la ingesta con tiempo estimado restante (viene de la Fase 2)
-- [ ] Reingestar una imagen con el servidor corriendo: marcarla PROCESSING, sacarla de `Catalogo` y cerrar sus `.pack` antes de regenerarla
-- [ ] "Ir a x, y" en el cliente
+- [x] ARC en `TileCache` (LRU como opción para comparar)
+  - Evidencia: `ProbarCache` (zona caliente + barrido: LRU 0 %, ARC 100 %; ventana: 89.8 % ambas; límite respetado). Dos clientes en img1gb: el segundo, 9 de 9 tiles iniciales desde la caché.
+- [x] Ingesta automática con `WatchService` (`PROCESSING` con %, `FAILED`)
+- [x] Barra de progreso de la ingesta con tiempo estimado restante (viene de la Fase 2)
+- [x] Reingestar una imagen con el servidor corriendo: `PROCESSING` + `409` en `VIEWPORT`, `Catalogo` suelta la imagen y `TileStore` cierra sus `.pack`; al terminar, `META RES:0` y clave de caché con versión
+  - Evidencia (Windows): `000-100-200-190032` (5775 × 5775) copiada a `data/entrada` con el servidor corriendo → se ingestó sola y se lee a 1600 %.
+  - Evidencia (Linux, PNG de 9000 × 9000): % 0 → 30 → 58 → 86 → READY; reingesta con un cliente conectado: 4 × `409` y luego `META RES:0` con 12 tiles reenviados; evento de solo atributos ignorado; `basura.txt` → `FAILED`; reinicio → "1 pendientes al arrancar" y la imagen lista no se reingesta.
+  - Hallazgo (D-45): cerrar una pestaña podía dejar cerrado un `.pack` para todas las sesiones; corregido.
+- [x] "Ir a x, y" en el cliente
 
 ---
 

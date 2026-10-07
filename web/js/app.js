@@ -28,6 +28,8 @@ const Q_OBJETIVO = 8;                  // Q* del controlador PI (§12.3)
 const grafica = new GraficaControl(document.getElementById('grafica'));
 const ctrlTextoEl = document.getElementById('ctrlTexto');
 let ultimoCtrl = null;
+let estadosLista = new Map();          // id -> READY / PROCESSING / FAILED, según el último LIST_RESP
+let temporizadorLista = null;
 
 const cache = new CacheTiles(CACHE_MAX, () => {
   expulsadosTotal++;
@@ -48,20 +50,31 @@ const pimg = new ClientePimg({
     estadoEl.textContent = texto;
   },
 
-  alLista: lista => {
+  alLista: (lista, inicial) => {
+    const antes = estadosLista;
+    estadosLista = new Map(lista.map(i => [i.id, i.estado]));
     selector.replaceChildren();
     for (const img of lista) {
       const op = document.createElement('option');
       op.value = img.id;
-      op.textContent = img.estado === 'READY' ? img.id : `${img.id} (${img.estado} ${img.progreso}%)`;
+      op.textContent = img.estado === 'READY' ? img.id
+        : img.estado === 'PROCESSING' ? `${img.id} (procesando ${img.progreso} %)` : `${img.id} (fallo la ingesta)`;
       op.disabled = img.estado !== 'READY';
       selector.appendChild(op);
     }
     const id = imagenActual ?? lista.find(i => i.estado === 'READY')?.id;
-    if (id) {
-      selector.value = id;
-      abrir(id, true);       // también sirve para reabrir tras una reconexión
+    if (id) selector.value = id;
+    if (inicial && id) {
+      abrir(id, true);                 // primera lista de la conexión: también reabre tras una reconexión
+    } else if (!imagenActual && id) {
+      abrir(id);                       // no había ninguna imagen lista y ya apareció una
+    } else if (imagenActual && antes.get(imagenActual) !== 'READY' && estadosLista.get(imagenActual) === 'READY') {
+      abrir(imagenActual);             // terminó de regenerarse: OPEN desde cero, sin los tiles viejos (§22.4)
     }
+    // §22.4: la lista se vuelve a pedir, más seguido mientras haya una ingesta en curso
+    clearTimeout(temporizadorLista);
+    temporizadorLista = setTimeout(() => pimg.pedirLista(),
+      lista.some(i => i.estado === 'PROCESSING') ? 2000 : 10000);
   },
 
   alMeta: meta => {
@@ -205,6 +218,24 @@ setInterval(() => {
   const escala = grafica.dibujar(Q_OBJETIVO);
   ctrlTextoEl.textContent = `R: 0–${Math.round(escala.maxR)} msg/s · Q: 0–${Math.round(escala.maxQ)} tiles · punteada: Q* = ${Q_OBJETIVO}`;
 }, 250);
+
+// ---------- Ir a x, y ----------
+const irX = document.getElementById('irX');
+const irY = document.getElementById('irY');
+
+function irA() {
+  const m = visor.meta;
+  const x = Math.floor(Number(irX.value)), y = Math.floor(Number(irY.value));
+  if (!m || irX.value === '' || irY.value === '' || x < 0 || y < 0 || x >= m.ancho || y >= m.alto) {
+    ultimoError = m ? `ir a: x en 0..${m.ancho - 1}, y en 0..${m.alto - 1}` : 'ir a: no hay imagen abierta';
+    return;
+  }
+  visor.irA(x, y);
+}
+document.getElementById('irBoton').addEventListener('click', irA);
+for (const campo of [irX, irY]) {
+  campo.addEventListener('keydown', e => { if (e.key === 'Enter') irA(); });
+}
 
 // ---------- Red simulada y cliente lento ----------
 document.getElementById('simAplicar').addEventListener('click', () => {

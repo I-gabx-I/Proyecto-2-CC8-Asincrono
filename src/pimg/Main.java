@@ -3,6 +3,7 @@ package pimg;
 import pimg.http.HttpServer;
 import pimg.http.Router;
 import pimg.http.StaticFileHandler;
+import pimg.ingest.IngestaAutomatica;
 import pimg.protocol.SesionPimg;
 import pimg.tiles.Catalogo;
 import pimg.tiles.TileCache;
@@ -20,9 +21,12 @@ public class Main {
         int puerto = 8080;
         boolean redSimulada = false;
         boolean controlRitmo = true;
+        boolean usarLru = false;
         for (String a : args) {
             if (a.equals("--sim")) {
                 redSimulada = true;                           // PROTOCOLO.md §16
+            } else if (a.equals("--lru")) {
+                usarLru = true;                               // comparación: LRU en lugar de ARC (D-30)
             } else if (a.equals("--sin-pi")) {
                 controlRitmo = false;                         // experimento: sin control de ritmo (§12)
             } else {
@@ -32,12 +36,14 @@ public class Main {
 
         // Recursos COMPARTIDOS por todas las sesiones
         Catalogo catalogo = new Catalogo(Path.of("data", "tiles"));
-        TileCache cache = new TileCache(CACHE_BYTES);
+        TileCache cache = new TileCache(CACHE_BYTES, usarLru);
 
         final boolean simulada = redSimulada;               // la lambda necesita variables finales
         final boolean conPI = controlRitmo;
         System.out.println("Red simulada: " + (simulada ? "ACTIVADA (--sim)" : "desactivada"));
         System.out.println("Control de ritmo PI: " + (conPI ? "activado" : "DESACTIVADO (--sin-pi)"));
+        System.out.println("Cache del servidor: " + (usarLru ? "LRU (--lru, solo para comparar)" : "ARC"));
+        new IngestaAutomatica(Path.of("data", "entrada"), Path.of("data", "tiles"), catalogo).iniciar();   // §22.4
 
         // Una SesionPimg NUEVA por cada conexión WebSocket
         WebSocketHandler ws = new WebSocketHandler("pimg.v2",

@@ -127,7 +127,7 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 ### D-29 · Red simulada dentro del servidor · 2026-10-02 · Vigente
 - **Por qué:** en localhost no hay pérdidas ni límite de ancho de banda; sin simulación, FEC y PI no se pueden observar ni medir.
 
-### D-30 · ARC en la caché del servidor · 2026-09-23 · Propuesta
+### D-30 · ARC en la caché del servidor · 2026-09-23 · Vigente
 - **Descartado:** LRU como aporte (usado por otros grupos).
 - **Por qué:** LRU no resiste barridos: un cliente recorriendo el nivel máximo expulsaría lo que usan todos. Se mantendrá LRU como opción para comparar la tasa de aciertos.
 ### D-31 · No verificar el CRC de cada chunk del PNG de entrada · 2026-10-04 · Vigente
@@ -205,3 +205,23 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 - **Sin `GET_TILE`:** un tile con CRC incorrecto no se guarda; lo reconstruye FEC o vuelve por el filtro o la re-declaración (§15). Se retiran `GET_TILE` y `EVICT` (ideas no permitidas).
 - **Servidor:** `enviadosRecientes` es un `LinkedHashMap` en orden de `NUM`; al recibir `BLOOM` se borra desde el principio hasta el primer `NUM > MAX`. Un reenvío se saca y se vuelve a insertar para conservar el orden.
 - **Re-declaración:** 250 ms después del `DONE` de la vista vigente, si faltan tiles en pantalla y no hay nada decodificándose, se envían `BLOOM` y el mismo `VIEWPORT` con `SEQ` nuevo. Máximo 3 intentos por vista; el tercero con `SEM + 1` (posible falso positivo, §13.7). El contador se reinicia cuando el usuario se mueve.
+
+### D-43 · ARC adaptada a bytes, lecturas de paridad sin uso, "ir a" sin animación · 2026-10-06 · Vigente
+- **ARC por bytes:** el artículo cuenta páginas de tamaño fijo; los tiles PNG miden distinto, así que T1, T2, B1, B2 y `p` se miden en bytes. Un tile más grande que toda la caché no se guarda.
+- **`obtenerSinUso`:** FEC lee cada tile protegido dos veces (envío y paridad). Contar la segunda lectura pasaría a T2 tiles que vio un solo cliente; por eso no cuenta como uso ni como acierto.
+- **Medido (`ProbarCache`, caché de 100 tiles):** zona caliente + barrido: LRU 0 %, ARC 100 % de aciertos en la zona caliente; ventana deslizante: 89.8 % ambas. Con dos clientes reales en img1gb, el segundo obtuvo 9 de 9 tiles iniciales de la caché.
+- **"Ir a x, y" salta sin animar:** animar el zoom pediría todos los niveles intermedios (un `VIEWPORT` por nivel); el salto pide una sola vista y mientras tanto se ve el ancestro ampliado.
+
+### D-44 · Ingesta automática en un proceso aparte, vigilando data/entrada · 2026-10-06 · Vigente
+- **Proceso aparte:** la ingesta de 93 GB necesita 4 GB de heap (D-37) y el servidor corre con 512 MB; si la ingesta falla, el servidor sigue atendiendo. El servidor lanza `IngestMain` con su misma JVM y classpath y lee el % de las líneas `Franja i/n`.
+- **Carpeta nueva `data/entrada`:** al arrancar se ingesta lo que no tiene pirámide, con el id tomado del nombre del archivo. Vigilar `data/input` habría reingestado las imágenes de evaluación, ingestadas a mano con otros ids.
+- **Fin de la copia:** 5 s sin eventos y el archivo sin nadie que lo escriba. **Huella** (tamaño y fecha): un evento que no la cambia (antivirus, atributos) no reingesta.
+- **Reingesta con clientes:** `PROCESSING` → `VIEWPORT` responde 409; al terminar, el servidor reabre con `META RES:0` y el cliente vacía su caché. La clave de `TileCache` lleva una versión (`id#n`), así que nunca se sirve un tile de la imagen anterior.
+- **Sin mensajes nuevos:** se usan `LIST_RESP` (`PROCESSING,%` / `FAILED`) y el error 409 ya definidos; el cliente vuelve a pedir `LIST` cada 2 s durante una ingesta y cada 10 s si no hay ninguna.
+- **No desde la página:** subir la imagen por HTTP contradice "HTTP solo para archivos iniciales" y no es viable con 93 GB.
+
+### D-45 · Un FileChannel compartido se reabre si otra sesión lo cierra · 2026-10-06 · Vigente
+- **Problema:** Java cierra un `FileChannel` cuando se interrumpe a un hilo que lee de él. Al cerrar una pestaña se interrumpe a su emisor; si estaba leyendo, el `.pack` de ese nivel quedaba cerrado para todas las sesiones hasta reiniciar.
+- **Decisión:** `TileStore.leer` reabre el canal (con lock y una sola vez) cuando recibe `ClosedChannelException`, y propaga `ClosedByInterruptException` (el hilo interrumpido es el de la sesión que se cierra). No se reabre durante una reingesta.
+- **Medido:** antes, después de interrumpir a una sesión lectora, la otra recibía `ClosedChannelException`; después, 100 de 100 lecturas bien.
+- **Relacionado:** `enviarTile` y `enviarParidad` capturan `IOException` y no solo `NoSuchFileException`; antes, cualquier otro error de lectura mataba al emisor sin aviso.

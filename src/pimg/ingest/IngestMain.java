@@ -3,6 +3,7 @@ package pimg.ingest;
 import pimg.tiles.PyramidLayout;
 import pimg.tiles.TileStore;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 public final class IngestMain {
@@ -34,6 +35,8 @@ public final class IngestMain {
         }
         int hilos = Runtime.getRuntime().availableProcessors();
 
+        // Reingesta: sin meta.json la imagen deja de estar READY hasta que esta ingesta termine (§22.2)
+        Files.deleteIfExists(SALIDA.resolve(id).resolve("meta.json"));
         try (ImageSource fuente = Fuentes.abrir(archivo)) {
             PyramidLayout piramide = new PyramidLayout(fuente.ancho(), fuente.alto(), T);
             TileStore destino = new TileStore(SALIDA, id, FORMATO);
@@ -56,8 +59,10 @@ public final class IngestMain {
 
                 memoriaMaxMB = Math.max(memoriaMaxMB, (rt.totalMemory() - rt.freeMemory()) >> 20);
                 if (i % 10 == 0 || i == franjas - 1) {
-                    System.out.printf("Franja %3d/%d | %6.1f s | %d tiles listos%n",
-                            i + 1, franjas, (System.nanoTime() - inicio) / 1e9, compresor.tiles());
+                    double seg = (System.nanoTime() - inicio) / 1e9;
+                    double restante = seg / (i + 1) * (franjas - i - 1);    // estimado: ritmo medio hasta ahora
+                    System.out.printf("Franja %3d/%d | %6.1f s | %d tiles listos | quedan ~%s%n",
+                            i + 1, franjas, seg, compresor.tiles(), duracion(restante));
                 }
             }
             constructor.terminar();
@@ -75,6 +80,11 @@ public final class IngestMain {
                     compresor.bytes() >> 20, compresor.bytes() / Math.max(1, compresor.tiles()) / 1024);
             System.out.printf("Memoria max. observada: %d MB (limite %d MB)%n", memoriaMaxMB, rt.maxMemory() >> 20);
         }
+    }
+
+    private static String duracion(double segundos) {
+        long s = Math.round(segundos);
+        return String.format("%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60);
     }
 
     private static void imprimirPiramide(PyramidLayout p) {
