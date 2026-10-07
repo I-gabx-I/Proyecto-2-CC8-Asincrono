@@ -916,9 +916,9 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 
 ## 17. Cachés
 
-### 17.1 Servidor ✅ (política a reemplazar por ARC 📝)
+### 17.1 Servidor ✅
 
-`pimg.tiles.TileCache`: bytes codificados de cada tile, **compartida por todas las sesiones**, límite **128 MB en bytes**. LRU actual (`LinkedHashMap` en orden de acceso); lectura de disco fuera del lock; imprime aciertos y fallos. Plan: ARC (Megiddo y Modha, 2003), adaptado a límite en bytes, con LRU como opción para comparar. En v2, la caché también sirve los datos que necesita el cálculo de cada paridad.
+`pimg.tiles.TileCache`: bytes codificados de cada tile, **compartida por todas las sesiones**, límite **128 MB en bytes**, lectura de disco fuera del lock. Política **ARC** (Megiddo y Modha, 2003) adaptada a bytes (`CacheArc`): T1 guarda los tiles usados una vez, T2 los usados dos o más, y B1/B2 recuerdan las claves expulsadas para ajustar el objetivo `p`. Un barrido (un cliente que recorre el nivel máximo) queda en T1 y no expulsa la zona que comparten varios clientes. `--lru` cambia a LRU (`CacheLru`) para comparar. El cálculo de cada paridad lee con `obtenerSinUso`, que no cuenta como uso (D-43).
 
 ### 17.2 Cliente ✅
 
@@ -934,6 +934,7 @@ EMISOR ──(asigna NUM)──► [ENLACE SIMULADO] ──► socket
 - ✅ **Cámara continua:** centro `(cx, cy)` y `zoom`; nivel `z = clamp(zMax + round(log₂ zoom), 0, zMax)`; zoom animado.
 - ✅ **Zoom hasta 16×** (`ZOOM_MAX`). Por encima de 1:1, vecino más cercano (`imageSmoothingEnabled = false`): cada píxel real del nivel máximo se ve como un bloque, sin inventar detalle. Por debajo de 1:1, con suavizado, para evitar aliasing en el texto.
 - ✅ **Coordenada bajo el cursor:** píxel de la imagen original bajo el mouse, en la barra superior.
+- ✅ **Ir a x, y:** campos en la barra superior; la vista salta (sin animar) al píxel pedido con zoom 800 % y lo marca con un recuadro rojo durante 3 s. Valida que la coordenada esté dentro de la imagen.
 - ✅ **Refinamiento progresivo:** mientras falta un tile se dibuja su ancestro más cercano en caché, ampliado. Así una pérdida nunca deja un hueco vacío.
 - ✅ **Fundido** de 150 ms; **throttling** de un `VIEWPORT` cada 100 ms; decodificación asíncrona con época.
 - ✅ **Recepción v2:** valida la cabecera de 28 bytes y `NUM`; cuenta saltos en `PERD`.
@@ -1147,9 +1148,9 @@ TCP controla **bytes** y garantiza entregar **todo**. PIMG controla **tiles** co
 | Alta | FEC (servidor y cliente) | ✅ |
 | Alta | `REPORT` + controlador PI + `CTRL` + gráficas | ✅ |
 | Alta | Bloom + `RESUME` + re-declaración (retira `EVICT` y `GET_TILE`) | ✅ |
-| Media | ARC en servidor (LRU como opción) | 📝 |
+| Media | ARC en servidor (LRU como opción) | ✅ |
 | Media | Ingesta automática (`WatchService`, `PROCESSING` con %) | 📝 |
-| Media | Coordenadas bajo el cursor e "ir a x, y" | 📝 |
+| Media | Coordenadas bajo el cursor e "ir a x, y" | ✅ |
 | Final | Pruebas con JDK 21 sin internet, varios clientes; documento final | 📝 |
 
 ---

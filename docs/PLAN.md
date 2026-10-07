@@ -37,7 +37,7 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 | 6 | FEC con paridad XOR entrelazada | `feat/fec` | ✅ |
 | 7 | Controlador PI (`REPORT`, `CTRL`, gráficas) | `feat/control-pi` | ✅ |
 | 8 | Filtros de Bloom, `RESUME` y re-declaración de vista | `feat/bloom-resume` | ✅ |
-| 9 | ARC, ingesta automática y navegación ("ir a x, y") | `feat/extras` | ⬜ |
+| 9 | ARC, ingesta automática y navegación ("ir a x, y") | `feat/extras` | 🟨 |
 | 10 | Pruebas finales con las 4 imágenes de evaluación | `test/evaluacion` | ⬜ |
 | 11 | Documento final y preparación de la defensa | `docs/final` | ⬜ |
 
@@ -266,13 +266,14 @@ Leyenda: ⬜ pendiente · 🟨 en progreso · ✅ terminada
 
 ---
 
-## Fase 9 — Extras ⬜
+## Fase 9 — Extras 🟨
 
-- [ ] ARC en `TileCache` (LRU como opción para comparar)
+- [x] ARC en `TileCache` (LRU como opción para comparar)
+  - Evidencia: `ProbarCache` (zona caliente + barrido: LRU 0 %, ARC 100 %; ventana: 89.8 % ambas; límite respetado). Dos clientes en img1gb: el segundo, 9 de 9 tiles iniciales desde la caché.
 - [ ] Ingesta automática con `WatchService` (`PROCESSING` con %, `FAILED`)
 - [ ] Barra de progreso de la ingesta con tiempo estimado restante (viene de la Fase 2)
 - [ ] Reingestar una imagen con el servidor corriendo: marcarla PROCESSING, sacarla de `Catalogo` y cerrar sus `.pack` antes de regenerarla
-- [ ] "Ir a x, y" en el cliente
+- [x] "Ir a x, y" en el cliente
 
 ---
 

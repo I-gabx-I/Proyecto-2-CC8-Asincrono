@@ -23,6 +23,7 @@ export class Visor {
     this.cuadricula = false;
     this.onCursor = null;        // función opcional: recibe {x, y} del píxel bajo el mouse, o null
     this.llegadas = new Map();   // clave -> momento de llegada (para el fundido)
+    this.marca = null;           // píxel buscado con "ir a x, y": { x, y, hasta }
     this.dibujoPendiente = false;
     this.ajustarTamanio();
     this.registrarEntrada();
@@ -161,8 +162,18 @@ export class Visor {
         ctx.fillText(clave, x0 + 4, y0 + 14);
       }
     }
+    let marcando = false;
+    if (this.marca && ahora < this.marca.hasta) {   // recuadro rojo en el píxel buscado, durante 3 s
+      const mx = (this.marca.x - this.cx) * this.zoom + this.w / 2;
+      const my = (this.marca.y - this.cy) * this.zoom + this.h / 2;
+      ctx.strokeStyle = '#ff5c5c';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(mx - 3, my - 3, this.zoom + 6, this.zoom + 6);
+      ctx.lineWidth = 1;
+      marcando = true;
+    }
     this.faltantes = faltantes;
-    if (animando || fundiendo) this.solicitarDibujo();   // seguir animando en el próximo cuadro
+    if (animando || fundiendo || marcando) this.solicitarDibujo();   // seguir animando en el próximo cuadro
   }
 
   /** Mientras llega el tile, dibuja su parte de un ancestro ya cargado, ampliada. */
@@ -210,6 +221,20 @@ export class Visor {
     const y = Math.floor(this.cy + (my - this.h / 2) / this.zoom);
     if (x < 0 || y < 0 || x >= this.meta.ancho || y >= this.meta.alto) return null;
     return { x, y };
+  }
+
+  /**
+   * "Ir a x, y": centra ese píxel de la imagen original con un zoom que permite leer los dígitos.
+   * Salta directo, sin animar: animar pediría todos los niveles intermedios (un VIEWPORT por nivel).
+   */
+  irA(x, y, zoom = 8) {
+    if (!this.meta) return;
+    this.ancla = null;
+    this.cx = x + 0.5;
+    this.cy = y + 0.5;
+    this.zoom = this.zoomObjetivo = this.limitarZoom(zoom);
+    this.marca = { x, y, hasta: performance.now() + 3000 };
+    this.cambio();
   }
 
   mover(dx, dy) {
@@ -275,6 +300,7 @@ export class Visor {
       this.cambio();
     });
     window.addEventListener('keydown', e => {
+      if (e.target instanceof HTMLInputElement) return;     // escribiendo en un campo, no es un atajo
       if (e.key === 'g' || e.key === 'G') {
         this.cuadricula = !this.cuadricula;
         this.solicitarDibujo();

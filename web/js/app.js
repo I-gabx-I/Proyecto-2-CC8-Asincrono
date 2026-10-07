@@ -206,6 +206,24 @@ setInterval(() => {
   ctrlTextoEl.textContent = `R: 0–${Math.round(escala.maxR)} msg/s · Q: 0–${Math.round(escala.maxQ)} tiles · punteada: Q* = ${Q_OBJETIVO}`;
 }, 250);
 
+// ---------- Ir a x, y ----------
+const irX = document.getElementById('irX');
+const irY = document.getElementById('irY');
+
+function irA() {
+  const m = visor.meta;
+  const x = Math.floor(Number(irX.value)), y = Math.floor(Number(irY.value));
+  if (!m || irX.value === '' || irY.value === '' || x < 0 || y < 0 || x >= m.ancho || y >= m.alto) {
+    ultimoError = m ? `ir a: x en 0..${m.ancho - 1}, y en 0..${m.alto - 1}` : 'ir a: no hay imagen abierta';
+    return;
+  }
+  visor.irA(x, y);
+}
+document.getElementById('irBoton').addEventListener('click', irA);
+for (const campo of [irX, irY]) {
+  campo.addEventListener('keydown', e => { if (e.key === 'Enter') irA(); });
+}
+
 // ---------- Red simulada y cliente lento ----------
 document.getElementById('simAplicar').addEventListener('click', () => {
   pimg.simular(+document.getElementById('simPerd').value,

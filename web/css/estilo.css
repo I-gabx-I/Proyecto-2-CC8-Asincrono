@@ -110,3 +110,12 @@ html, body {
 #control .q { color: #ffb86b; }
 #grafica { display: block; background: #0b0d10; border-radius: 4px; }
 #ctrlTexto { color: #8a93a3; margin-top: 4px; font-family: ui-monospace, Consolas, monospace; }
+
+.ir { display: flex; gap: 4px; }
+.ir input {
+  width: 9ch;
+  background: #1b1f27;
+  color: inherit;
+  border: 1px solid #2a2f3a;
+  border-radius: 4px;
+}

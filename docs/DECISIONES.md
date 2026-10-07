@@ -127,7 +127,7 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 ### D-29 · Red simulada dentro del servidor · 2026-10-02 · Vigente
 - **Por qué:** en localhost no hay pérdidas ni límite de ancho de banda; sin simulación, FEC y PI no se pueden observar ni medir.
 
-### D-30 · ARC en la caché del servidor · 2026-09-23 · Propuesta
+### D-30 · ARC en la caché del servidor · 2026-09-23 · Vigente
 - **Descartado:** LRU como aporte (usado por otros grupos).
 - **Por qué:** LRU no resiste barridos: un cliente recorriendo el nivel máximo expulsaría lo que usan todos. Se mantendrá LRU como opción para comparar la tasa de aciertos.
 ### D-31 · No verificar el CRC de cada chunk del PNG de entrada · 2026-10-04 · Vigente
@@ -205,3 +205,9 @@ Cada decisión importante del proyecto, con su contexto, la alternativa descarta
 - **Sin `GET_TILE`:** un tile con CRC incorrecto no se guarda; lo reconstruye FEC o vuelve por el filtro o la re-declaración (§15). Se retiran `GET_TILE` y `EVICT` (ideas no permitidas).
 - **Servidor:** `enviadosRecientes` es un `LinkedHashMap` en orden de `NUM`; al recibir `BLOOM` se borra desde el principio hasta el primer `NUM > MAX`. Un reenvío se saca y se vuelve a insertar para conservar el orden.
 - **Re-declaración:** 250 ms después del `DONE` de la vista vigente, si faltan tiles en pantalla y no hay nada decodificándose, se envían `BLOOM` y el mismo `VIEWPORT` con `SEQ` nuevo. Máximo 3 intentos por vista; el tercero con `SEM + 1` (posible falso positivo, §13.7). El contador se reinicia cuando el usuario se mueve.
+
+### D-43 · ARC adaptada a bytes, lecturas de paridad sin uso, "ir a" sin animación · 2026-10-06 · Vigente
+- **ARC por bytes:** el artículo cuenta páginas de tamaño fijo; los tiles PNG miden distinto, así que T1, T2, B1, B2 y `p` se miden en bytes. Un tile más grande que toda la caché no se guarda.
+- **`obtenerSinUso`:** FEC lee cada tile protegido dos veces (envío y paridad). Contar la segunda lectura pasaría a T2 tiles que vio un solo cliente; por eso no cuenta como uso ni como acierto.
+- **Medido (`ProbarCache`, caché de 100 tiles):** zona caliente + barrido: LRU 0 %, ARC 100 % de aciertos en la zona caliente; ventana deslizante: 89.8 % ambas. Con dos clientes reales en img1gb, el segundo obtuvo 9 de 9 tiles iniciales de la caché.
+- **"Ir a x, y" salta sin animar:** animar el zoom pediría todos los niveles intermedios (un `VIEWPORT` por nivel); el salto pide una sola vista y mientras tanto se ve el ancestro ampliado.

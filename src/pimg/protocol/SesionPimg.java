@@ -474,7 +474,7 @@ public final class SesionPimg implements WebSocketListener {
         List<byte[]> datos = new ArrayList<>();
         for (Vista.Tile t : p.grupo()) {
             try {
-                byte[] d = cache.obtener(img.id(), img.almacen(), t.z(), t.x(), t.y());
+                byte[] d = cache.obtenerSinUso(img.id(),img.almacen(), t.z(), t.x(), t.y());
                 miembros.add(new TileFrame.Miembro(t.z(), t.x(), t.y(), formato, d));
                 datos.add(d);
             } catch (NoSuchFileException e) {
